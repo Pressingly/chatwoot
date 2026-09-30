@@ -400,7 +400,7 @@ RSpec.describe 'Profile API', type: :request do
   end
 
   describe 'PUT /api/v1/profile in SSO mode' do
-    let(:sso_env) { { 'AUTH_TYPE' => 'SSO', 'SSO_ACCOUNT_ID' => '1', 'SMB_NAME' => 'chat' } }
+    let(:sso_env) { { 'AUTH_TYPE' => 'SSO', 'SSO_ACCOUNT_ID' => '1', 'SMB_NAME' => 'chat', 'SSO_TRUSTED_PROXY_CIDRS' => '127.0.0.1/32' } }
     let(:agent) { create(:user, password: 'Test123!', email: 'Agent@Example.com', account: account, role: :agent) }
 
     def put_profile(profile)

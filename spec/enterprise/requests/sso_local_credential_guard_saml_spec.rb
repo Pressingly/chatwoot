@@ -1,7 +1,10 @@
 require 'rails_helper'
 
 RSpec.describe 'SSO local credential guard with enterprise SAML', type: :request do
-  let(:sso_env) { { 'AUTH_TYPE' => 'SSO', 'SSO_ACCOUNT_ID' => '1', 'SMB_NAME' => 'chat', 'FRONTEND_URL' => 'http://www.example.com' } }
+  let(:sso_env) do
+    { 'AUTH_TYPE' => 'SSO', 'SSO_ACCOUNT_ID' => '1', 'SMB_NAME' => 'chat', 'FRONTEND_URL' => 'http://www.example.com',
+      'SSO_TRUSTED_PROXY_CIDRS' => '127.0.0.1/32' }
+  end
   let!(:account) { create(:account) }
 
   before do

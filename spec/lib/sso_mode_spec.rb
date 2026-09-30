@@ -1,7 +1,7 @@
 require 'rails_helper'
 
 RSpec.describe SsoMode do
-  let(:sso_env) { { 'AUTH_TYPE' => 'SSO', 'SSO_ACCOUNT_ID' => '1', 'SMB_NAME' => 'chat' } }
+  let(:sso_env) { { 'AUTH_TYPE' => 'SSO', 'SSO_ACCOUNT_ID' => '1', 'SMB_NAME' => 'chat', 'SSO_TRUSTED_PROXY_CIDRS' => '127.0.0.1/32' } }
 
   def sso(extra = {}, &)
     with_modified_env(sso_env.merge(extra), &)
@@ -66,6 +66,7 @@ RSpec.describe SsoMode do
       sso('SESSION_COOKIE_MAX_AGE_SECONDS' => '8h') { expect { described_class.validate! }.to raise_error(SsoMode::InvalidConfig) }
       sso('DEFAULT_EMAIL_DOMAIN' => 'Bad') { expect { described_class.validate! }.to raise_error(SsoMode::InvalidConfig) }
       sso('SSO_TRUSTED_PROXY_CIDRS' => 'nope') { expect { described_class.validate! }.to raise_error(SsoMode::InvalidConfig) }
+      sso('SSO_TRUSTED_PROXY_CIDRS' => nil) { expect { described_class.validate! }.to raise_error(SsoMode::InvalidConfig, /SSO_TRUSTED_PROXY_CIDRS/) }
     end
   end
 
@@ -74,13 +75,17 @@ RSpec.describe SsoMode do
       sso('SESSION_COOKIE_MAX_AGE_SECONDS' => nil) { expect(described_class.session_lifetime_seconds).to eq(604_800) }
     end
 
-    it 'accepts the bounds and an in-range value' do
-      %w[60 3600 31536000].each do |v|
+    it 'accepts the bounds and an in-range whole-day value' do
+      %w[86400 172800 31536000].each do |v|
         sso('SESSION_COOKIE_MAX_AGE_SECONDS' => v) { expect(described_class.session_lifetime_seconds).to eq(v.to_i) }
       end
     end
 
-    ['8h', '0', 'abc', '', '-1', '1.5', ' 604800', '604800 ', "604800\n", '59', '31536001', '0000000060x'].each do |value|
+    # A lifetime below a day, or one that isn't a whole number of days, silently breaks the SPA's
+    # session cookie: setAuthCredentials sets its expiry with date-fns differenceInDays, which
+    # truncates toward zero, so anything under 86400 seconds rounds to 0 days and js-cookie never
+    # stores the cookie at all.
+    ['8h', '0', 'abc', '', '-1', '1.5', ' 604800', '604800 ', "604800\n", '59', '3600', '86399', '90000', '31536001', '0000000060x'].each do |value|
       it "rejects #{value.inspect} naming the variable" do
         sso('SESSION_COOKIE_MAX_AGE_SECONDS' => value) do
           expect { described_class.session_lifetime_seconds }.to raise_error(SsoMode::InvalidConfig, /SESSION_COOKIE_MAX_AGE_SECONDS/)
@@ -91,7 +96,7 @@ RSpec.describe SsoMode do
 
   describe '.token_lifespan' do
     it 'is session_lifetime_seconds.seconds in SSO mode' do
-      sso('SESSION_COOKIE_MAX_AGE_SECONDS' => '3600') { expect(described_class.token_lifespan).to eq(3600.seconds) }
+      sso('SESSION_COOKIE_MAX_AGE_SECONDS' => '86400') { expect(described_class.token_lifespan).to eq(86_400.seconds) }
     end
 
     it 'is 2.months when mode is off' do
@@ -140,8 +145,13 @@ RSpec.describe SsoMode do
   end
 
   describe '.trusted_proxy_ranges' do
-    it 'returns an empty list when unset' do
-      sso('SSO_TRUSTED_PROXY_CIDRS' => nil) { expect(described_class.trusted_proxy_ranges).to eq([]) }
+    # Required, not optional: unset would make Identity#trusted_peer? trust a proxy-asserted identity
+    # from any source, and the app's own port being unreachable is a deployment fact this code cannot
+    # verify.
+    it 'raises, naming the variable, when unset' do
+      sso('SSO_TRUSTED_PROXY_CIDRS' => nil) do
+        expect { described_class.trusted_proxy_ranges }.to raise_error(SsoMode::InvalidConfig, /SSO_TRUSTED_PROXY_CIDRS/)
+      end
     end
 
     it 'parses a comma separated list' do

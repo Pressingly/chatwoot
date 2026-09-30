@@ -3,7 +3,7 @@ require 'rails_helper'
 RSpec.describe 'ProxyAuth identity reconciliation', type: :request do
   let(:account) { create(:account) }
   let(:user) { create(:user, email: 'alice@example.com', password: 'Test123!', account: account, role: :agent) }
-  let(:sso_env) { { 'AUTH_TYPE' => 'SSO', 'SSO_ACCOUNT_ID' => account.id.to_s, 'SMB_NAME' => 'chat', 'SSO_TRUSTED_PROXY_CIDRS' => nil } }
+  let(:sso_env) { { 'AUTH_TYPE' => 'SSO', 'SSO_ACCOUNT_ID' => account.id.to_s, 'SMB_NAME' => 'chat', 'SSO_TRUSTED_PROXY_CIDRS' => '127.0.0.1/32' } }
   let!(:auth) { user.create_new_auth_token }
   let(:client) { auth['client'] }
 

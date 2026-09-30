@@ -82,12 +82,23 @@ describe '/app/login', type: :request do
   end
 
   context 'with the page-level identity reconciliation' do
-    let(:sso_env) { { AUTH_TYPE: 'SSO', SSO_ACCOUNT_ID: '1', SMB_NAME: 'portal', SSO_TRUSTED_PROXY_CIDRS: nil } }
+    let(:sso_env) { { AUTH_TYPE: 'SSO', SSO_ACCOUNT_ID: '1', SMB_NAME: 'portal', SSO_TRUSTED_PROXY_CIDRS: '127.0.0.1/32' } }
     let(:session_cookie) { { 'uid' => 'alice@example.com', 'client' => 'c', 'access-token' => 't' }.to_json }
+
+    # js-cookie (the SPA's writer of this cookie) encodeURIComponent's the value, then unescapes a
+    # fixed set of codes back to a literal character for readability - notably %2B (+), %40 (@) and
+    # %3A (:) - and leaves only `"`, `,`, space and non-ASCII bytes percent-encoded. CGI.escape is the
+    # wrong shape for this: it is form-urlencoding, so it turns a literal `+` into `%2B` (the opposite
+    # direction) and a space into `+` (which js-cookie renders as %20). Building the header this way
+    # instead makes every test in this block byte-for-byte what a real browser cookie would send.
+    def js_cookie_header(value)
+      unescaped = /%(23|24|26|2B|2F|3[AC-F]|40|5[BDE]|60|7[BCD])/i
+      CGI.escape(value).gsub('+', '%20').gsub(unescaped) { |code| [code[1..].hex].pack('C') }
+    end
 
     def load_page(cookie: :none, proxy_email: :none)
       headers = {}
-      headers['Cookie'] = "cw_d_session_info=#{CGI.escape(cookie)}" unless cookie == :none
+      headers['Cookie'] = "cw_d_session_info=#{js_cookie_header(cookie)}" unless cookie == :none
       headers['X-Auth-Request-Email'] = proxy_email unless proxy_email == :none
       get '/app/login', headers: headers
     end
@@ -110,6 +121,11 @@ describe '/app/login', type: :request do
 
     it 'keeps the cookie when uid matches, case and whitespace insensitive on both sides' do
       load_page(cookie: { 'uid' => ' Alice@Example.com ' }.to_json, proxy_email: '  ALICE@example.com ')
+      expect(session_cookie_lines).to be_empty
+    end
+
+    it 'keeps the cookie when the email contains a plus sign, as a real browser cookie sends it' do
+      load_page(cookie: { 'uid' => 'alice+work@example.com' }.to_json, proxy_email: 'alice+work@example.com')
       expect(session_cookie_lines).to be_empty
     end
 

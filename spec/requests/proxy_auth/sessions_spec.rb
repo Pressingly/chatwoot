@@ -2,7 +2,7 @@ require 'rails_helper'
 
 RSpec.describe 'POST /proxy_auth/session', type: :request do
   let(:account) { create(:account) }
-  let(:sso_env) { { 'AUTH_TYPE' => 'SSO', 'SSO_ACCOUNT_ID' => account.id.to_s, 'SMB_NAME' => 'chat', 'SSO_TRUSTED_PROXY_CIDRS' => nil } }
+  let(:sso_env) { { 'AUTH_TYPE' => 'SSO', 'SSO_ACCOUNT_ID' => account.id.to_s, 'SMB_NAME' => 'chat', 'SSO_TRUSTED_PROXY_CIDRS' => '127.0.0.1/32' } }
   let(:header) { { 'X-Auth-Request-Email' => 'alice@example.com' } }
 
   around { |example| with_modified_env(sso_env) { example.run } }

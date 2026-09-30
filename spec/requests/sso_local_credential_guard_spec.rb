@@ -1,7 +1,7 @@
 require 'rails_helper'
 
 RSpec.describe 'SSO local credential guard', type: :request do
-  let(:sso_env) { { 'AUTH_TYPE' => 'SSO', 'SSO_ACCOUNT_ID' => '1', 'SMB_NAME' => 'chat' } }
+  let(:sso_env) { { 'AUTH_TYPE' => 'SSO', 'SSO_ACCOUNT_ID' => '1', 'SMB_NAME' => 'chat', 'SSO_TRUSTED_PROXY_CIDRS' => '127.0.0.1/32' } }
   let(:denied_body) { { 'error' => 'Local credential login is disabled', 'error_code' => 'sso_local_auth_disabled' } }
 
   def expect_denied
@@ -114,6 +114,28 @@ RSpec.describe 'SSO local credential guard', type: :request do
         expect(status).to eq(403)
         expect(headers['Content-Type']).to eq('application/json')
         expect(JSON.parse(body.join)).to eq(denied_body)
+      end
+    end
+
+    context 'when the downstream app raises' do
+      # This middleware sits at position 0, ahead of ShowExceptions, so its own rescue must cover only
+      # the path decision - never @app.call - or a real 500 further down the stack (or any error while
+      # show_exceptions is off) gets reported as "local credential login disabled" instead of a 500.
+      let(:app) { ->(_env) { raise 'boom' } }
+      let(:guard) { SsoMode::LocalCredentialGuard.new(app) }
+
+      def call_guard(path, method: 'GET')
+        env = Rack::MockRequest.env_for('/', method: method)
+        env['PATH_INFO'] = path
+        guard.call(env)
+      end
+
+      it 'propagates a downstream error on an allowed path instead of reporting it as denied' do
+        expect { call_guard('/health') }.to raise_error(RuntimeError, 'boom')
+      end
+
+      it 'still denies a credential path outright, without reaching the downstream app' do
+        expect(call_guard('/auth/sign_in', method: 'POST').first).to eq(403)
       end
     end
 

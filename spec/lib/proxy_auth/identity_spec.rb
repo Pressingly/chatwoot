@@ -2,7 +2,11 @@ require 'rails_helper'
 
 RSpec.describe ProxyAuth::Identity do
   let(:sso_env) do
-    { 'AUTH_TYPE' => 'SSO', 'SSO_ACCOUNT_ID' => '1', 'SMB_NAME' => 'chat', 'DEFAULT_EMAIL_DOMAIN' => nil, 'SSO_TRUSTED_PROXY_CIDRS' => nil }
+    # 10.0.0.0/8 covers the default remote_addr (10.0.0.1) the `parse` helper below uses, so every
+    # example that doesn't override the CIDR list still exercises a trusted peer, as before this was
+    # required.
+    { 'AUTH_TYPE' => 'SSO', 'SSO_ACCOUNT_ID' => '1', 'SMB_NAME' => 'chat', 'DEFAULT_EMAIL_DOMAIN' => nil,
+      'SSO_TRUSTED_PROXY_CIDRS' => '10.0.0.0/8' }
   end
 
   def parse(header = :none, remote_addr: '10.0.0.1', env: {})
@@ -125,9 +129,10 @@ RSpec.describe ProxyAuth::Identity do
       expect(parse('a@example.com', remote_addr: '', env: cidrs).status).to eq(:absent)
     end
 
-    it 'applies no peer check when the list is unset' do
-      expect(parse('a@example.com', remote_addr: '203.0.113.9').status).to eq(:present)
-      expect(parse('a@example.com', remote_addr: 'not-an-ip').status).to eq(:present)
+    it 'is unusable, never present, when the list is unset - the setting is required, not optional' do
+      unset = { 'SSO_TRUSTED_PROXY_CIDRS' => nil }
+      expect(parse('a@example.com', remote_addr: '203.0.113.9', env: unset).status).to eq(:unusable)
+      expect(parse('a@example.com', remote_addr: '10.0.0.1', env: unset).status).to eq(:unusable)
     end
   end
 

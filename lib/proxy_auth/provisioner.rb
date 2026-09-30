@@ -28,6 +28,12 @@ class ProxyAuth::Provisioner
   # Serialise on the account row like AgentBuilder so two logins cannot both slip under the agent limit.
   def onboard(account, user)
     account.with_lock do
+      # Re-read: the caller's lookup ran before the lock, so a second request for the same brand-new
+      # user can arrive here with a stale nil, after the first request already committed the user and
+      # the membership. Without this, the second request would create_user again (a duplicate email)
+      # or, once that raced-creation fallback resolved it, still count the just-added membership
+      # against the seat limit and raise LimitExceeded for a user who is already a member.
+      user ||= User.from_email(@email)
       unless user && member?(account, user)
         raise LimitExceeded, 'Account limit exceeded' unless account.usage_limits[:agents] > account.account_users.count
 

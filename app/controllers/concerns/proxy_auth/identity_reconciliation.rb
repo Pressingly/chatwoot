@@ -17,10 +17,27 @@ module ProxyAuth::IdentityReconciliation
   def reconcile_page_identity
     return unless SsoMode.enabled?
 
-    raw = cookies[SESSION_COOKIE]
+    raw = raw_session_cookie
     return if raw.blank?
 
     cookies.delete(SESSION_COOKIE, path: '/') unless page_cookie_matches_identity?(raw)
+  end
+
+  # Rack's cookie jar (what `cookies[]` reads) decodes with URI.decode_www_form_component, which turns
+  # a literal `+` into a space. js-cookie - the SPA's writer of this cookie, and the only reader that
+  # has to agree with it - only unescapes %XX and leaves `+` (and `@`, `:` and friends) as a literal
+  # character. `Identity::LOCAL_PART` allows `+` in the local part, so an address containing one would
+  # never match through the Rack-decoded value, and the session would be flushed on every page load.
+  # Reading and decoding the raw header the way js-cookie itself would keeps the two sides in sync.
+  def raw_session_cookie
+    header = request.get_header('HTTP_COOKIE')
+    return nil if header.blank?
+
+    header.split(/;\s*/).each do |pair|
+      name, value = pair.split('=', 2)
+      return URI.decode_uri_component(value.to_s) if name == SESSION_COOKIE
+    end
+    nil
   end
 
   def page_cookie_matches_identity?(raw)

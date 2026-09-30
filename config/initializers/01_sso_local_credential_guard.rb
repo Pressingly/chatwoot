@@ -16,10 +16,9 @@ class SsoMode::LocalCredentialGuard
 
   def call(env)
     return @app.call(env) unless SsoMode.enabled?
+    return deny if denied_safely?(env)
 
-    denied?(env['REQUEST_METHOD'].to_s, self.class.normalise(env['PATH_INFO'])) ? deny : @app.call(env)
-  rescue StandardError
-    deny # fail closed: no 500 path
+    @app.call(env)
   end
 
   # Percent-decode once, then lowercase, squeeze //, drop a trailing / and a final .ext, so every
@@ -37,6 +36,15 @@ class SsoMode::LocalCredentialGuard
   end
 
   private
+
+  # Only the path decision runs under rescue, so a downstream 500 (a real app error) is never
+  # reported as "local credential login disabled" - this middleware sits at position 0, ahead of
+  # ShowExceptions, so an unrescued app error here would otherwise surface as a misleading 403.
+  def denied_safely?(env)
+    denied?(env['REQUEST_METHOD'].to_s, self.class.normalise(env['PATH_INFO']))
+  rescue StandardError
+    true # fail closed: an unparseable path is treated as denied, never as a pass-through
+  end
 
   def denied?(method, path)
     return false if ALLOWED.include?([method, path])

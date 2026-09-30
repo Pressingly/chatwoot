@@ -1,7 +1,7 @@
 require 'rails_helper'
 
 RSpec.describe 'devise_token_auth initializer' do # rubocop:disable RSpec/DescribeClass
-  let(:sso_env) { { 'AUTH_TYPE' => 'SSO', 'SSO_ACCOUNT_ID' => '1', 'SMB_NAME' => 'chat' } }
+  let(:sso_env) { { 'AUTH_TYPE' => 'SSO', 'SSO_ACCOUNT_ID' => '1', 'SMB_NAME' => 'chat', 'SSO_TRUSTED_PROXY_CIDRS' => '127.0.0.1/32' } }
   let(:initializer) { Rails.root.join('config/initializers/devise_token_auth.rb') }
 
   around do |example|
@@ -19,7 +19,7 @@ RSpec.describe 'devise_token_auth initializer' do # rubocop:disable RSpec/Descri
   end
 
   it 'equals SESSION_COOKIE_MAX_AGE_SECONDS in SSO mode' do
-    expect(lifespan_after_loading(sso_env.merge('SESSION_COOKIE_MAX_AGE_SECONDS' => '3600'))).to eq(3600.seconds)
+    expect(lifespan_after_loading(sso_env.merge('SESSION_COOKIE_MAX_AGE_SECONDS' => '86400'))).to eq(86_400.seconds)
   end
 
   it 'defaults to 604800 seconds in SSO mode when the env is unset' do
@@ -34,7 +34,7 @@ RSpec.describe 'devise_token_auth initializer' do # rubocop:disable RSpec/Descri
     expect(DeviseTokenAuth.change_headers_on_each_request).to be false
   end
 
-  %w[8h 0 abc -1 1.5 59 31536001].each do |bad|
+  %w[8h 0 abc -1 1.5 59 3600 31536001].each do |bad|
     it "raises SsoMode::InvalidConfig instead of using #{bad}" do
       with_modified_env(sso_env.merge('SESSION_COOKIE_MAX_AGE_SECONDS' => bad)) do
         expect { SsoMode.validate! }.to raise_error(SsoMode::InvalidConfig)

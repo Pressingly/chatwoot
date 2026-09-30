@@ -2,7 +2,7 @@ require 'rails_helper'
 
 RSpec.describe ProxyAuth::Provisioner do
   let(:account) { create(:account) }
-  let(:sso_env) { { 'AUTH_TYPE' => 'SSO', 'SSO_ACCOUNT_ID' => account.id.to_s, 'SMB_NAME' => 'chat' } }
+  let(:sso_env) { { 'AUTH_TYPE' => 'SSO', 'SSO_ACCOUNT_ID' => account.id.to_s, 'SMB_NAME' => 'chat', 'SSO_TRUSTED_PROXY_CIDRS' => '127.0.0.1/32' } }
 
   around { |example| with_modified_env(sso_env) { example.run } }
 
@@ -180,6 +180,19 @@ RSpec.describe ProxyAuth::Provisioner do
 
       expect { provision }.to raise_error(ActiveRecord::RecordInvalid)
       expect(AccountUser.where(user_id: user.id, account_id: account.id)).to be_empty
+    end
+
+    it 'does not raise LimitExceeded for a second request racing behind one that already onboarded the same user' do
+      # The outer lookup (before the lock) is stale nil for both requests of the same brand-new user.
+      # By the time this one gets the lock, the other has already committed the user and membership,
+      # which is exactly what fills the one free seat - so re-reading inside the lock, not the limit
+      # check, must be what decides this request is already done.
+      limit_agents_to(1)
+      member = create(:user, email: 'alice@example.com')
+      create(:account_user, account: account, user: member, role: :agent)
+      allow(User).to receive(:from_email).with('alice@example.com').and_return(nil, member)
+
+      expect(provision).to eq(member)
     end
   end
 

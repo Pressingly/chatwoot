@@ -49,10 +49,11 @@ class ProxyAuth::Identity
     Result.new(status: :unusable, email: nil)
   end
 
+  # SsoMode.trusted_proxy_ranges is required in SSO mode (raises otherwise, caught by #parse's
+  # rescue as :unusable) - the app's own port is meant to be unreachable directly, but that is a
+  # deployment fact this code cannot verify, so it is never assumed here.
   def trusted_peer?
     ranges = SsoMode.trusted_proxy_ranges
-    return true if ranges.empty?
-
     peer = IPAddr.new(@request.env['REMOTE_ADDR'].to_s)
     ranges.any? { |range| range.include?(peer) }
   rescue IPAddr::Error
