@@ -1,6 +1,7 @@
 class DashboardController < ActionController::Base
   include SwitchLocale
   include PortalHomeData
+  include ProxyAuth::IdentityReconciliation
 
   GLOBAL_CONFIG_KEYS = %w[
     LOGO
@@ -29,6 +30,7 @@ class DashboardController < ActionController::Base
     INSTALLATION_PRICING_PLAN
   ].freeze
 
+  before_action :reconcile_page_identity
   before_action :set_application_pack
   before_action :set_global_config
   before_action :set_dashboard_scripts
@@ -55,6 +57,8 @@ class DashboardController < ActionController::Base
   end
 
   def ensure_installation_onboarding
+    return if SsoMode.enabled?
+
     redirect_to '/installation/onboarding' if ::Redis::Alfred.get(::Redis::Alfred::CHATWOOT_INSTALLATION_ONBOARDING)
   end
 
@@ -97,6 +101,8 @@ class DashboardController < ActionController::Base
   end
 
   def allowed_login_methods
+    return [] if SsoMode.enabled?
+
     methods = ['email']
     methods << 'google_oauth' if GlobalConfigService.load('ENABLE_GOOGLE_OAUTH_LOGIN', 'true').to_s != 'false'
     methods << 'saml' if ChatwootHub.pricing_plan != 'community' && GlobalConfigService.load('ENABLE_SAML_SSO_LOGIN', 'true').to_s != 'false'

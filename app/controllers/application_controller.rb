@@ -3,9 +3,11 @@ class ApplicationController < ActionController::Base
   include RequestExceptionHandler
   include Pundit::Authorization
   include SwitchLocale
+  include ProxyAuth::IdentityReconciliation
   include TrackSessionActivity
 
   skip_before_action :verify_authenticity_token
+  prepend_before_action :reconcile_proxy_identity
 
   before_action :set_current_user, unless: :devise_controller?
   around_action :switch_locale

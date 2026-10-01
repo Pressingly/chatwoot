@@ -6,6 +6,7 @@ import { SESSION_STORAGE_KEYS } from 'dashboard/constants/sessionStorage';
 import { LocalStorage } from 'shared/helpers/localStorage';
 import SessionStorage from 'shared/helpers/sessionStorage';
 import { emitter } from 'shared/helpers/mitt';
+import { isSsoMode, getPortalUrl } from 'shared/helpers/ssoMode';
 import {
   ANALYTICS_IDENTITY,
   ANALYTICS_RESET,
@@ -31,7 +32,10 @@ export const getHeaderExpiry = response =>
 export const setAuthCredentials = response => {
   const expiryDate = getHeaderExpiry(response);
   Cookies.set('cw_d_session_info', JSON.stringify(response.headers), {
-    expires: differenceInDays(expiryDate, new Date()),
+    // differenceInDays rounds a sub-day lifetime to 0, which js-cookie treats as already expired.
+    expires: isSsoMode()
+      ? expiryDate
+      : differenceInDays(expiryDate, new Date()),
   });
   setUser(response.data.data, expiryDate);
 };
@@ -82,6 +86,12 @@ export const clearCookiesOnLogout = () => {
   clearBrowserSessionCookies();
   clearLocalStorageOnLogout();
   clearSessionStorageOnLogout();
+  if (isSsoMode()) {
+    // Only app state is cleared; the upstream _oauth2_proxy session is host-scoped and never touched.
+    // getPortalUrl throws when SMB_NAME is missing, so a wrong host is never used.
+    window.location = getPortalUrl();
+    return;
+  }
   const globalConfig = window.globalConfig || {};
   const logoutRedirectLink = globalConfig.LOGOUT_REDIRECT_LINK || '/';
   window.location = logoutRedirectLink;
