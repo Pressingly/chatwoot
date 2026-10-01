@@ -34,7 +34,7 @@ RSpec.describe 'devise_token_auth initializer' do # rubocop:disable RSpec/Descri
     expect(DeviseTokenAuth.change_headers_on_each_request).to be false
   end
 
-  %w[8h 0 abc -1 1.5 59 3600 31536001].each do |bad|
+  %w[8h 0 abc -1 1.5 59 31536001].each do |bad|
     it "raises SsoMode::InvalidConfig instead of using #{bad}" do
       with_modified_env(sso_env.merge('SESSION_COOKIE_MAX_AGE_SECONDS' => bad)) do
         expect { SsoMode.validate! }.to raise_error(SsoMode::InvalidConfig)

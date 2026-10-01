@@ -7,6 +7,7 @@ import {
   setLoadingStatus,
   throwErrorMessage,
   parseLinearAPIErrorResponse,
+  setAuthCredentials,
 } from '../api';
 
 describe('#getLoadingStatus', () => {
@@ -244,5 +245,35 @@ describe('authAPI#logout', () => {
 
     expect(Cookies.get('cw_d_session_info')).toBeUndefined();
     expect(window.location).toBe('/');
+  });
+});
+
+describe('#setAuthCredentials', () => {
+  const response = expiry => ({
+    headers: { expiry, uid: 'a@b.co' },
+    data: { data: { id: 1 } },
+  });
+
+  afterEach(() => {
+    delete window.chatwootConfig;
+    vi.restoreAllMocks();
+  });
+
+  it('stores the exact expiry in SSO mode, so a lifetime under a day is kept', () => {
+    window.chatwootConfig = { ssoMode: true };
+    const set = vi.spyOn(Cookies, 'set');
+    const expiry = Math.floor(Date.now() / 1000) + 8 * 3600;
+    setAuthCredentials(response(expiry));
+    const { expires } = set.mock.calls[0][2];
+    expect(expires).toBeInstanceOf(Date);
+    expect(expires.getTime()).toBe(expiry * 1000);
+  });
+
+  it('keeps whole-day expiry when SSO mode is off', () => {
+    const set = vi.spyOn(Cookies, 'set');
+    setAuthCredentials(
+      response(Math.floor(Date.now() / 1000) + 3 * 86400 + 60)
+    );
+    expect(set.mock.calls[0][2].expires).toBe(3);
   });
 });

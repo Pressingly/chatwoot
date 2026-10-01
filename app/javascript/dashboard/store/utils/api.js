@@ -32,7 +32,10 @@ export const getHeaderExpiry = response =>
 export const setAuthCredentials = response => {
   const expiryDate = getHeaderExpiry(response);
   Cookies.set('cw_d_session_info', JSON.stringify(response.headers), {
-    expires: differenceInDays(expiryDate, new Date()),
+    // differenceInDays rounds a sub-day lifetime to 0, which js-cookie treats as already expired.
+    expires: isSsoMode()
+      ? expiryDate
+      : differenceInDays(expiryDate, new Date()),
   });
   setUser(response.data.data, expiryDate);
 };

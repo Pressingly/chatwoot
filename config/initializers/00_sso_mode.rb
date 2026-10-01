@@ -7,13 +7,7 @@ module SsoMode
   class InvalidConfig < StandardError; end
 
   DEFAULT_LIFETIME_SECONDS = 604_800
-  # A day, not a second, is the real unit: setAuthCredentials (dashboard/store/utils/api.js) sets the
-  # session cookie's expiry with date-fns differenceInDays, which truncates toward zero. A lifetime
-  # under a day rounds to 0 days, and js-cookie treats an expires of 0 as "already expired", so the
-  # cookie is never stored; a lifetime that isn't a whole number of days is silently shortened by up
-  # to a day. Restricting to whole days here keeps the two sides exactly in sync.
-  ONE_DAY_SECONDS = 86_400
-  LIFETIME_RANGE = (ONE_DAY_SECONDS..31_536_000)
+  LIFETIME_RANGE = (60..31_536_000)
   LABEL = /\A[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\z/
 
   module_function
@@ -41,10 +35,9 @@ module SsoMode
     return DEFAULT_LIFETIME_SECONDS if raw.nil?
 
     seconds = raw.match?(/\A[0-9]{1,9}\z/) ? raw.to_i : nil
-    unless seconds && LIFETIME_RANGE.cover?(seconds) && (seconds % ONE_DAY_SECONDS).zero?
+    unless seconds && LIFETIME_RANGE.cover?(seconds)
       raise InvalidConfig,
-            'SESSION_COOKIE_MAX_AGE_SECONDS must be a whole number of days, in seconds, within ' \
-            "#{LIFETIME_RANGE}, got '#{raw}'"
+            "SESSION_COOKIE_MAX_AGE_SECONDS must be an integer in #{LIFETIME_RANGE}, got '#{raw}'"
     end
 
     seconds

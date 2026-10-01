@@ -75,17 +75,13 @@ RSpec.describe SsoMode do
       sso('SESSION_COOKIE_MAX_AGE_SECONDS' => nil) { expect(described_class.session_lifetime_seconds).to eq(604_800) }
     end
 
-    it 'accepts the bounds and an in-range whole-day value' do
-      %w[86400 172800 31536000].each do |v|
+    it 'accepts the bounds, including lifetimes under a day' do
+      %w[60 28800 86400 90000 31536000].each do |v|
         sso('SESSION_COOKIE_MAX_AGE_SECONDS' => v) { expect(described_class.session_lifetime_seconds).to eq(v.to_i) }
       end
     end
 
-    # A lifetime below a day, or one that isn't a whole number of days, silently breaks the SPA's
-    # session cookie: setAuthCredentials sets its expiry with date-fns differenceInDays, which
-    # truncates toward zero, so anything under 86400 seconds rounds to 0 days and js-cookie never
-    # stores the cookie at all.
-    ['8h', '0', 'abc', '', '-1', '1.5', ' 604800', '604800 ', "604800\n", '59', '3600', '86399', '90000', '31536001', '0000000060x'].each do |value|
+    ['8h', '0', 'abc', '', '-1', '1.5', ' 604800', '604800 ', "604800\n", '59', '31536001', '0000000060x'].each do |value|
       it "rejects #{value.inspect} naming the variable" do
         sso('SESSION_COOKIE_MAX_AGE_SECONDS' => value) do
           expect { described_class.session_lifetime_seconds }.to raise_error(SsoMode::InvalidConfig, /SESSION_COOKIE_MAX_AGE_SECONDS/)
