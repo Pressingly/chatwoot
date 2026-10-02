@@ -3,6 +3,7 @@ Rails.application.routes.draw do
   mount_devise_token_auth_for 'User', at: 'auth', controllers: {
     confirmations: 'devise_overrides/confirmations',
     passwords: 'devise_overrides/passwords',
+    registrations: 'devise_overrides/registrations',
     sessions: 'devise_overrides/sessions',
     token_validations: 'devise_overrides/token_validations',
     omniauth_callbacks: 'devise_overrides/omniauth_callbacks'
@@ -727,45 +728,52 @@ Rails.application.routes.draw do
   require 'sidekiq/web'
   require 'sidekiq/cron/web'
 
-  devise_for :super_admins, path: 'super_admin', controllers: { sessions: 'super_admin/devise/sessions' }
-  devise_scope :super_admin do
-    get 'super_admin/logout', to: 'super_admin/devise/sessions#destroy'
-    namespace :super_admin do
-      root to: 'dashboard#index'
+  # Under AUTH_TYPE=SSO the super-admin console is not routed at all:
+  # its password login, and the Devise defaults devise_for mounts beside it
+  # (password reset, registration, confirmation), would be a local login outside
+  # mPass. Operators use `rails console` instead. Checked per request, so a
+  # deployment switching modes needs no rebuild.
+  constraints(->(_request) { !Mpass::ProxyIdentity.sso_mode? }) do
+    devise_for :super_admins, path: 'super_admin', controllers: { sessions: 'super_admin/devise/sessions' }
+    devise_scope :super_admin do
+      get 'super_admin/logout', to: 'super_admin/devise/sessions#destroy'
+      namespace :super_admin do
+        root to: 'dashboard#index'
 
-      resource :app_config, only: [:show, :create]
-      resource :push_diagnostics, only: [:show, :create] do
-        post :destroy_subscriptions, on: :collection
-      end
+        resource :app_config, only: [:show, :create]
+        resource :push_diagnostics, only: [:show, :create] do
+          post :destroy_subscriptions, on: :collection
+        end
 
-      # order of resources affect the order of sidebar navigation in super admin
-      resources :accounts, only: [:index, :new, :create, :show, :edit, :update, :destroy] do
-        post :seed, on: :member
-        post :reset_cache, on: :member
-      end
-      resources :users, only: [:index, :new, :create, :show, :edit, :update, :destroy] do
-        delete :avatar, on: :member, action: :destroy_avatar
-        post :resend_confirmation, on: :member
-      end
+        # order of resources affect the order of sidebar navigation in super admin
+        resources :accounts, only: [:index, :new, :create, :show, :edit, :update, :destroy] do
+          post :seed, on: :member
+          post :reset_cache, on: :member
+        end
+        resources :users, only: [:index, :new, :create, :show, :edit, :update, :destroy] do
+          delete :avatar, on: :member, action: :destroy_avatar
+          post :resend_confirmation, on: :member
+        end
 
-      resources :access_tokens, only: [:index, :show]
-      resources :installation_configs, only: [:index, :new, :create, :show, :edit, :update]
-      resources :agent_bots, only: [:index, :new, :create, :show, :edit, :update, :destroy] do
-        delete :avatar, on: :member, action: :destroy_avatar
-      end
-      resources :platform_apps, only: [:index, :new, :create, :show, :edit, :update, :destroy]
-      resources :platform_banners
-      resource :instance_status, only: [:show]
+        resources :access_tokens, only: [:index, :show]
+        resources :installation_configs, only: [:index, :new, :create, :show, :edit, :update]
+        resources :agent_bots, only: [:index, :new, :create, :show, :edit, :update, :destroy] do
+          delete :avatar, on: :member, action: :destroy_avatar
+        end
+        resources :platform_apps, only: [:index, :new, :create, :show, :edit, :update, :destroy]
+        resources :platform_banners
+        resource :instance_status, only: [:show]
 
-      resource :settings, only: [:show] do
-        get :refresh, on: :collection
-      end
+        resource :settings, only: [:show] do
+          get :refresh, on: :collection
+        end
 
-      # resources that doesn't appear in primary navigation in super admin
-      resources :account_users, only: [:new, :create, :show, :destroy]
-    end
-    authenticated :super_admin do
-      mount Sidekiq::Web => '/monitoring/sidekiq'
+        # resources that doesn't appear in primary navigation in super admin
+        resources :account_users, only: [:new, :create, :show, :destroy]
+      end
+      authenticated :super_admin do
+        mount Sidekiq::Web => '/monitoring/sidekiq'
+      end
     end
   end
 

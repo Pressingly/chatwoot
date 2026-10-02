@@ -107,6 +107,60 @@ RSpec.describe 'local-credential endpoints under SSO', type: :request do
       expect(response).to have_http_status(:success)
     end
 
+    # G7: devise_token_auth's default registrations.
+    it 'refuses a password change through PUT /auth, in every spelling' do
+      before = user.reload.encrypted_password
+      %w[/auth /auth.json].each do |path|
+        put path, params: { password: 'NewPassword1!', password_confirmation: 'NewPassword1!' },
+                  headers: user.create_new_auth_token
+        expect(response).to have_http_status(:not_found)
+      end
+      expect(user.reload.encrypted_password).to eq(before)
+    end
+
+    it 'refuses sign-up and self-deletion through /auth' do
+      expect { post '/auth', params: { email: 'new@example.com', password: 'Password1!', name: 'N' } }
+        .not_to change(User, :count)
+      expect(response).to have_http_status(:not_found)
+
+      delete '/auth', headers: user.create_new_auth_token
+      expect(response).to have_http_status(:not_found)
+    end
+
+    # G10: federated logins are second identity paths.
+    # OmniAuth's test mode passes a successful auth hash through, so without the
+    # guard these callbacks would sign the user in.
+    it 'refuses OmniAuth callbacks that would otherwise sign in' do
+      OmniAuth.config.test_mode = true
+      OmniAuth.config.mock_auth[:google_oauth2] =
+        OmniAuth::AuthHash.new(provider: 'google_oauth2', uid: '1', info: { email: user.email, name: 'A' })
+
+      %w[/omniauth/google_oauth2/callback /auth/google_oauth2/callback /auth/failure /omniauth/failure].each do |path|
+        get path
+        expect(response).to have_http_status(:not_found), path
+      end
+    ensure
+      OmniAuth.config.mock_auth[:google_oauth2] = nil
+      OmniAuth.config.test_mode = false
+    end
+
+    it 'refuses the SAML login initiation' do
+      post '/api/v1/auth/saml_login', params: { email: user.email }
+      expect(response).to have_http_status(:not_found)
+    end
+
+    it 'does not route the super-admin console or its Devise defaults' do
+      super_admin = create(:super_admin)
+      post '/super_admin/sign_in', params: { super_admin: { email: super_admin.email, password: super_admin.password } }
+      expect(response).to have_http_status(:not_found)
+
+      [[:get, '/super_admin'], [:post, '/super_admin/password'], [:post, '/super_admin'],
+       [:get, '/monitoring/sidekiq']].each do |verb, path|
+        public_send(verb, path)
+        expect(response).to have_http_status(:not_found), "#{verb} #{path}"
+      end
+    end
+
     it 'leaves the SSO handoff itself reachable' do
       with_modified_env(FRONTEND_URL: 'https://support.example.com') do
         get '/auth/sso/proxy-login', headers: { 'X-Auth-Request-Email' => 'alice@askii.ai' }
@@ -138,6 +192,16 @@ RSpec.describe 'local-credential endpoints under SSO', type: :request do
 
     it 'still accepts a password login' do
       post '/auth/sign_in', params: { email: user.email, password: user.password }
+      expect(response).to have_http_status(:success)
+    end
+
+    it 'still routes PUT /auth' do
+      put '/auth', params: { name: 'Renamed' }, headers: user.create_new_auth_token
+      expect(response).not_to have_http_status(:not_found)
+    end
+
+    it 'still serves the super-admin login' do
+      get '/super_admin/sign_in'
       expect(response).to have_http_status(:success)
     end
   end

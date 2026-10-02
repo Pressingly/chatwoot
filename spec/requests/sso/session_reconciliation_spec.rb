@@ -266,6 +266,44 @@ RSpec.describe 'mPass session reconciliation', type: :request do
     end
   end
 
+  # The corporate gate is enforced on every request, not only at the handoff: an
+  # existing session for a principal outside SMB_CORPORATE_ID is flushed.
+  describe 'corporate-tenant gate on an existing session' do
+    let(:corp_env) { sso_env.merge(SMB_CORPORATE_ID: 'acme-42') }
+    let(:acme) { token('custom:is_corporate' => 'true', 'custom:corporate_id' => 'acme-42') }
+    let(:globex) { token('custom:is_corporate' => 'true', 'custom:corporate_id' => 'globex-7') }
+
+    def token(claims)
+      "h.#{Base64.urlsafe_encode64(claims.to_json, padding: false)}.s"
+    end
+
+    it 'redirects a document request into the handoff, which then refuses it' do
+      cookies.merge("cw_d_session_info=#{ERB::Util.url_encode({ uid: 'a@askii.ai' }.to_json)}")
+      with_modified_env(**corp_env) do
+        get '/app', headers: { 'X-Auth-Request-Email' => 'a@askii.ai', 'X-Auth-Request-Access-Token' => globex }
+        expect(response).to redirect_to('/auth/sso/proxy-login')
+      end
+    end
+
+    it 'evicts the token and 401s an XHR' do
+      with_modified_env(**corp_env) do
+        get "/api/v1/accounts/#{account.id}/conversations",
+            headers: token_a.merge('X-Auth-Request-Email' => 'a@askii.ai', 'X-Auth-Request-Access-Token' => globex)
+        expect(response).to have_http_status(:unauthorized)
+        expect(response.headers['X-Mpass-Session-Flushed']).to eq('true')
+        expect(user_a.reload.tokens.keys).not_to include(token_a['client'])
+      end
+    end
+
+    it 'leaves a matching corporate principal alone' do
+      with_modified_env(**corp_env) do
+        get "/api/v1/accounts/#{account.id}/conversations",
+            headers: token_a.merge('X-Auth-Request-Email' => 'a@askii.ai', 'X-Auth-Request-Access-Token' => acme)
+        expect(response).to have_http_status(:success)
+      end
+    end
+  end
+
   describe 'identity-managed fields are gated SERVER-side (audit row 15)' do
     it 'refuses a password change under SSO' do
       with_modified_env(**sso_env) do

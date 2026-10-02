@@ -37,7 +37,9 @@ module MpassSessionReconciliation
     return false if current.blank?
 
     # nil here means asserted but unresolvable: flush rather than keep the session.
-    current != Mpass::ProxyIdentity.email(request)
+    # A principal outside SMB_CORPORATE_ID is flushed too, so the corporate gate is
+    # enforced on every request, not only at the handoff; the handoff then answers 403.
+    current != Mpass::ProxyIdentity.email(request) || !Mpass::ProxyIdentity.corporate_claims_ok?(request)
   end
 
   # Rule 3, entry path — the proxy asserts an identity and the browser holds no app

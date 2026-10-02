@@ -77,18 +77,33 @@ class MpassUserBuilder
   # Runs on EVERY login, not only on creation — a user may have been created by an
   # earlier request that died before joining, or provisioned out of band
   # (workspace-auto-join/spec.md "auto-join SHALL run on every login").
-  # Idempotent: a member already in the account is a no-op with no writes.
+  # A user who already belongs to ANY account is left alone ("Existing member
+  # triggers no DB writes"), so an admin removing an agent from one account while
+  # they keep another is not undone on their next login. Removing their LAST
+  # membership is: with no rows they are joined again. Revoke access in mPass
+  # (or with SMB_CORPORATE_ID), not by removing the membership.
   def auto_join_account
-    account = Account.order(created_at: :asc).first
+    return if @user.account_users.exists?
+
+    account = target_account
     # No account yet: do nothing and let Chatwoot's own first-run flow create one.
     # Creating it here would race the admin provisioning the canonical account.
     return if account.blank?
-    return if @user.account_users.exists?(account_id: account.id)
 
     AccountUser.create!(user: @user, account: account, role: DEFAULT_ROLE)
   rescue ActiveRecord::RecordNotUnique, ActiveRecord::RecordInvalid
     # Two concurrent logins for the same new user: the loser trips either the DB
     # unique index or AccountUser's uniqueness validation. Re-raise anything else.
     raise unless @user.account_users.exists?(account_id: account.id)
+  end
+
+  # CHATWOOT_SMB_DEFAULT_ACCOUNT_ID names the account, so the provisioner knows
+  # exactly which one to create; unset, the oldest active account. A configured id
+  # that doesn't exist (or is suspended) joins nothing rather than guessing another.
+  def target_account
+    id = ENV.fetch('CHATWOOT_SMB_DEFAULT_ACCOUNT_ID', nil).presence
+    return Account.active.find_by(id: id) if id
+
+    Account.active.order(created_at: :asc).first
   end
 end

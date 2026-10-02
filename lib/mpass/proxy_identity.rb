@@ -16,6 +16,7 @@
 module Mpass::ProxyIdentity
   EMAIL_HEADER = 'HTTP_X_AUTH_REQUEST_EMAIL'
   PREFERRED_USERNAME_HEADER = 'HTTP_X_AUTH_REQUEST_PREFERRED_USERNAME'
+  ACCESS_TOKEN_HEADER = 'HTTP_X_AUTH_REQUEST_ACCESS_TOKEN'
 
   UUID_SHAPE = /\A\h{8}-\h{4}-\h{4}-\h{4}-\h{12}\z/
   NUMERIC = /\A\d+\z/
@@ -53,10 +54,39 @@ module Mpass::ProxyIdentity
 
   # indexOf-based by contract, never a regex. The canonical email-shape pattern
   # backtracks polynomially on adversarial input; CodeQL's js/polynomial-redos
-  # flags it. See proxy-auth-middleware/spec.md "email-shape detection".
+  # flags it. See proxy-auth-middleware/spec.md "email-shape detection": an `@`
+  # that isn't first, then a `.` at least one character after it. Matching the
+  # canonical check keeps `a@b` resolving to the same user row in every app.
   def email_shaped?(value)
-    idx = value.to_s.index('@')
-    !idx.nil? && idx.positive? && idx < value.to_s.length - 1
+    value = value.to_s
+    at = value.index('@')
+    return false if at.nil? || at.zero?
+
+    dot = value.index('.', at + 1)
+    !dot.nil? && dot > at + 1
+  end
+
+  # Corporate-tenant binding (proxy-auth-middleware "corporate-tenant binding SHALL
+  # gate admission when configured"). ForwardAuth admits the whole Cognito pool;
+  # with SMB_CORPORATE_ID set, only that corporate's principals get in. Unset, the
+  # check is skipped. The JWT is decoded without verifying its signature: it rides
+  # the same trust chain as the identity headers (oauth2-proxy validated it,
+  # Traefik strips client copies). A missing or undecodable token fails closed.
+  def corporate_claims_ok?(request)
+    expected = ENV.fetch('SMB_CORPORATE_ID', nil).presence
+    return true if expected.nil?
+
+    payload = jwt_payload(request.get_header(ACCESS_TOKEN_HEADER))
+    payload.is_a?(Hash) && payload['custom:is_corporate'] == 'true' && payload['custom:corporate_id'] == expected
+  end
+
+  def jwt_payload(token)
+    segment = token.to_s.split('.')[1]
+    return nil if segment.blank?
+
+    JSON.parse(Base64.urlsafe_decode64(segment))
+  rescue ArgumentError, EncodingError, JSON::ParserError
+    nil
   end
 
   # Moneta's Cognito pool returns the literal placeholder "cognito:default_val"

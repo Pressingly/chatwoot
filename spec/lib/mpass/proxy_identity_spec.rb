@@ -61,6 +61,60 @@ RSpec.describe Mpass::ProxyIdentity do
       expect(described_class.email_shaped?('@example.com')).to be false
       expect(described_class.email_shaped?('alice@')).to be false
     end
+
+    # proxy-auth-middleware "email-shape detection": a `.` at least one character
+    # after the `@`, so every bundle app resolves the same value to the same row.
+    it 'requires a dot after the @' do
+      expect(described_class.email_shaped?('alice@example.com')).to be true
+      expect(described_class.email_shaped?('a@b')).to be false
+      expect(described_class.email_shaped?('alice@.com')).to be false
+    end
+  end
+
+  describe '.corporate_claims_ok?' do
+    def token(claims)
+      "header.#{Base64.urlsafe_encode64(claims.to_json, padding: false)}.signature"
+    end
+
+    def check(access_token)
+      headers = access_token ? { 'HTTP_X_AUTH_REQUEST_ACCESS_TOKEN' => access_token } : {}
+      described_class.corporate_claims_ok?(request_with(headers))
+    end
+
+    let(:acme) { token('custom:is_corporate' => 'true', 'custom:corporate_id' => 'acme-42') }
+
+    it 'skips the check when SMB_CORPORATE_ID is unset, even with no token' do
+      with_modified_env(SMB_CORPORATE_ID: nil) { expect(check(nil)).to be true }
+    end
+
+    context 'when SMB_CORPORATE_ID is set' do
+      around { |ex| with_modified_env(SMB_CORPORATE_ID: 'acme-42') { ex.run } }
+
+      it 'admits a matching corporate principal' do
+        expect(check(acme)).to be true
+      end
+
+      it 'refuses another corporate' do
+        expect(check(token('custom:is_corporate' => 'true', 'custom:corporate_id' => 'globex-7'))).to be false
+      end
+
+      it 'refuses an individual principal carrying the right id' do
+        expect(check(token('custom:is_corporate' => 'false', 'custom:corporate_id' => 'acme-42'))).to be false
+        expect(check(token('custom:corporate_id' => 'acme-42'))).to be false
+      end
+
+      it 'refuses a missing token' do
+        expect(check(nil)).to be false
+        expect(check('')).to be false
+      end
+
+      it 'refuses an undecodable token without raising' do
+        ['not-a-jwt', 'a.!!!.c', "a.#{Base64.urlsafe_encode64('not json')}.c",
+         "a.#{Base64.urlsafe_encode64('[1]')}.c", "a.#{Base64.urlsafe_encode64("\xff\xfe")}.c"].each do |bad|
+          expect(check(bad)).to be(false), bad
+        end
+      end
+    end
   end
 
   describe '.display_name' do

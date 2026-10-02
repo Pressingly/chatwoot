@@ -122,9 +122,10 @@ class DashboardController < ActionController::Base
       # persists ENV into InstallationConfig on first read, which would make
       # AUTH_TYPE sticky in the database and survive an env change. audit rows 5, 8
       AUTH_TYPE: ENV.fetch('AUTH_TYPE', ''),
-      # SSO Sign out target (logout-flow spec). Its own key: LOGOUT_REDIRECT_LINK also
-      # drives the 401 re-auth path, which must stay inside the app.
-      MPASS_PORTAL_URL: ENV.fetch('MPASS_PORTAL_URL', ''),
+      # SSO Sign out target (logout-flow spec), the bundle's LOGOUT_REDIRECT_URL. Not
+      # upstream's LOGOUT_REDIRECT_LINK: that one is DB-only and also drives the 401
+      # re-auth path, which must stay inside the app.
+      LOGOUT_REDIRECT_URL: ENV.fetch('LOGOUT_REDIRECT_URL', ''),
       ACTIVE_PLATFORM_BANNERS: active_platform_banners
     }
   end

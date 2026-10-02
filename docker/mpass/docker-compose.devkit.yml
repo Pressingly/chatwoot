@@ -88,12 +88,14 @@ services:
       DEFAULT_EMAIL_DOMAIN: ${DEFAULT_EMAIL_DOMAIN}
       # Where the app's own Sign out navigates. Navigation only: it must not end
       # the SSO session — that is the portal's "Log out of all apps". Not
-      # LOGOUT_REDIRECT_LINK: Chatwoot reads that key from its database only, and
-      # it also drives the 401 re-auth path, which must stay inside the app.
-      MPASS_PORTAL_URL: https://${PLATFORM_DOMAIN}
+      # upstream's LOGOUT_REDIRECT_LINK: Chatwoot reads that key from its database
+      # only, and it also drives the 401 re-auth path, which must stay inside the app.
+      LOGOUT_REDIRECT_URL: https://${PLATFORM_DOMAIN}
       # devise_token_auth token lifespan, so Chatwoot expires with the bundle
       # instead of holding its own 2-month default.
-      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-432000}
+      SESSION_COOKIE_MAX_AGE_SECONDS: ${SESSION_COOKIE_MAX_AGE_SECONDS:-432000}
+      # Corporate-tenant gate; empty admits every mPass principal.
+      SMB_CORPORATE_ID: ${SMB_CORPORATE_ID:-}
       ENABLE_ACCOUNT_SIGNUP: 'false'
     # db:chatwoot_prepare loads the schema on an empty database and migrates an
     # existing one, so a rebuild is safe to run repeatedly.
@@ -112,6 +114,8 @@ services:
     labels:
       - traefik.enable=true
       # Opt-in for the devkit's Traefik, which otherwise routes only its own project.
+      # Needs the devkit's provider constraint to accept this label; upstream
+      # mpass-sso-devkit does not yet (proposed there, not patched per fork).
       - mpass-sso-devkit.app=true
       - traefik.http.services.chatwoot.loadbalancer.server.port=3000
 
@@ -197,10 +201,10 @@ services:
 
 networks:
   frontend:
-    name: ${SMB_NAME:-foss}-frontend
+    name: ${SMB_NAME:-devkit}-frontend
     external: true
   backend:
-    name: ${SMB_NAME:-foss}-backend
+    name: ${SMB_NAME:-devkit}-backend
     external: true
 
 volumes:

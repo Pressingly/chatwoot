@@ -6,7 +6,7 @@ require 'rails_helper'
 # forgets `include MpassLocalAuthGuard` fails here instead of shipping open.
 RSpec.describe 'local-credential route inventory under SSO', type: :request do
   let(:guards) { %i[reject_local_auth_under_sso reject_local_login_under_sso] }
-  let(:local_auth_controller_pattern) { %r{\A(devise_token_auth|devise_overrides|devise|installation|auth)/} }
+  let(:local_auth_controller_pattern) { %r{\A(devise_token_auth|devise_overrides|devise|installation|auth|api/v1/auth\z)} }
 
   # Reachable under SSO without the guard, each for a stated reason.
   let(:not_local_credentials) do
@@ -17,14 +17,14 @@ RSpec.describe 'local-credential route inventory under SSO', type: :request do
   end
   let(:known_open) do
     {
-      'devise_token_auth/registrations' => 'apps/chatwoot/security.md G7 — PUT /auth sets a password without the current one',
-      'devise_overrides/omniauth_callbacks' => 'apps/chatwoot/security.md G10 — gate OmniAuth under SSO',
-      'devise_token_auth/omniauth_callbacks' => 'apps/chatwoot/security.md G10',
-      'devise/passwords' => 'super-admin Devise defaults (devise_for :super_admins has no skip:)',
-      'devise/confirmations' => 'super-admin Devise defaults',
-      'devise/registrations' => 'super-admin Devise defaults',
-      'devise/omniauth_callbacks' => 'super-admin Devise defaults',
-      'super_admin/devise/sessions' => 'super-admin password login (separate Warden session)',
+      # The super-admin console and the Devise defaults devise_for mounts beside it
+      # are not routed under SSO (a route constraint, so these controllers carry no
+      # guard); the 404s are pinned in local_auth_endpoints_spec.rb.
+      'devise/passwords' => 'super-admin Devise defaults: unrouted under SSO',
+      'devise/confirmations' => 'super-admin Devise defaults: unrouted under SSO',
+      'devise/registrations' => 'super-admin Devise defaults: unrouted under SSO',
+      'devise/omniauth_callbacks' => 'super-admin Devise defaults: unrouted under SSO',
+      'super_admin/devise/sessions' => 'super-admin password login: unrouted under SSO',
       'platform/api/v1/users' => 'Platform API mints login links; machine-to-machine, and a Platform app ' \
                                  'can already read the user access token, so it adds no new access'
     }

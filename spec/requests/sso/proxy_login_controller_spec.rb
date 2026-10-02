@@ -89,6 +89,39 @@ RSpec.describe 'Sso::ProxyLoginController', type: :request do
     end
   end
 
+  describe 'corporate-tenant gate' do
+    let(:env) { sso_env.merge(SMB_CORPORATE_ID: 'acme-42') }
+
+    def token(claims)
+      "h.#{Base64.urlsafe_encode64(claims.to_json, padding: false)}.s"
+    end
+
+    it 'hands off a matching corporate principal' do
+      with_modified_env(**env) do
+        get_handoff('X-Auth-Request-Email' => 'alice@example.com',
+                    'X-Auth-Request-Access-Token' => token('custom:is_corporate' => 'true', 'custom:corporate_id' => 'acme-42'))
+        expect(response).to redirect_to(/sso_auth_token/)
+      end
+    end
+
+    it 'refuses another tenant with 403 and leaves no user row' do
+      with_modified_env(**env) do
+        expect do
+          get_handoff('X-Auth-Request-Email' => 'mallory@example.com',
+                      'X-Auth-Request-Access-Token' => token('custom:is_corporate' => 'true', 'custom:corporate_id' => 'globex-7'))
+        end.not_to change(User, :count)
+        expect(response).to have_http_status(:forbidden)
+      end
+    end
+
+    it 'refuses a missing access token with 403' do
+      with_modified_env(**env) do
+        get_handoff('X-Auth-Request-Email' => 'alice@example.com')
+        expect(response).to have_http_status(:forbidden)
+      end
+    end
+  end
+
   describe 'workspace auto-join edge cases' do
     it 'skips join entirely when no account exists' do
       Account.destroy_all
@@ -114,7 +147,8 @@ RSpec.describe 'Sso::ProxyLoginController', type: :request do
       with_modified_env(**sso_env) do
         get_handoff('X-Auth-Request-Email' => 'alice@example.com')
         expect(response).to redirect_to(/sso_auth_token/)
-        expect(user.reload.accounts).to include(other, account)
+        # An existing member is left alone (workspace-auto-join "no DB writes").
+        expect(user.reload.accounts).to contain_exactly(other)
       end
     end
   end

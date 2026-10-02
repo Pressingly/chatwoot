@@ -22,6 +22,8 @@ class Sso::ProxyLoginController < ApplicationController
   def create
     email = Mpass::ProxyIdentity.email(request)
     return redirect_with_error if email.blank?
+    # Before the builder, so a refused principal leaves no user row behind.
+    return refuse_corporate unless Mpass::ProxyIdentity.corporate_claims_ok?(request)
 
     user = MpassUserBuilder.new(
       email: email,
@@ -42,6 +44,14 @@ class Sso::ProxyLoginController < ApplicationController
   # caller that can reach the port.
   def ensure_sso_mode
     head :not_found unless Mpass::ProxyIdentity.sso_mode?
+  end
+
+  # 403, not the error redirect: a principal outside the tenant is not a failed
+  # handoff to retry. The SPA cookie goes too, so a session the browser still holds
+  # for this principal cannot outlive the refusal.
+  def refuse_corporate
+    cookies.delete('cw_d_session_info')
+    head :forbidden
   end
 
   def redirect_with_error

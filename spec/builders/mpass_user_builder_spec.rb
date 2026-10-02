@@ -123,7 +123,28 @@ RSpec.describe MpassUserBuilder do
       user = create(:user, email: email, account: other)
 
       expect { described_class.new(email: email).perform }.not_to raise_error
-      expect(user.reload.accounts).to include(other, account)
+      # An existing member is left alone, so an admin's removal from one account
+      # is not undone while the user keeps another.
+      expect(user.reload.accounts).to contain_exactly(other)
+    end
+
+    it 'joins CHATWOOT_SMB_DEFAULT_ACCOUNT_ID instead of the oldest account' do
+      named = create(:account)
+      with_modified_env(CHATWOOT_SMB_DEFAULT_ACCOUNT_ID: named.id.to_s) do
+        expect(builder.perform.accounts).to contain_exactly(named)
+      end
+    end
+
+    it 'joins nothing when CHATWOOT_SMB_DEFAULT_ACCOUNT_ID names no account' do
+      with_modified_env(CHATWOOT_SMB_DEFAULT_ACCOUNT_ID: '0') do
+        expect(builder.perform.account_users).to be_empty
+      end
+    end
+
+    it 'skips a suspended oldest account' do
+      account.update!(status: :suspended)
+      newer = create(:account)
+      expect(builder.perform.accounts).to contain_exactly(newer)
     end
   end
 end

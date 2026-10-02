@@ -26,13 +26,25 @@ export default {
     // session, and skipping the request would leave it valid for its full lifespan
     // after the user believes they have logged out.
     //
-    // The portal URL is deployer-supplied: MPASS_PORTAL_URL, passed to
+    // The portal URL is deployer-supplied: LOGOUT_REDIRECT_URL, passed to
     // clearCookiesOnLogout(), not LOGOUT_REDIRECT_LINK (DB-only, and it also drives
     // the 401 re-auth path). Never derive the host by rewriting the hostname, and
     // never point at /oauth2/sign_out.
+    //
+    // Missing or not an absolute http(s) URL: log and do nothing. Falling back to
+    // '/' would re-enter the handoff and sign the user straight back in, so Sign
+    // out would look broken instead of failing loudly.
     if (isSSOMode()) {
+      const portalUrl = window.globalConfig?.LOGOUT_REDIRECT_URL;
+      if (!/^https?:\/\/[^/]/i.test(portalUrl || '')) {
+        // eslint-disable-next-line no-console
+        console.error(
+          'SSO Sign out: LOGOUT_REDIRECT_URL is missing or not an absolute http(s) URL.'
+        );
+        return Promise.resolve();
+      }
       deleteIndexedDBOnLogout();
-      clearCookiesOnLogout(window.globalConfig?.MPASS_PORTAL_URL);
+      clearCookiesOnLogout(portalUrl);
       return Promise.resolve();
     }
 
