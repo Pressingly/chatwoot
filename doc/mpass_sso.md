@@ -31,8 +31,12 @@ browser ──> traefik ──(ForwardAuth)──> oauth2-proxy ──> mpass-au
 | `AUTH_TYPE` | `SSO` turns the integration on. Anything else leaves upstream behaviour untouched |
 | `DEFAULT_EMAIL_DOMAIN` | Domain used to synthesise an address from a bare mPass id. Required: unset, every bare-id login is refused. **Must be identical on every app in the bundle**, or the same Cognito principal becomes a different user row per app |
 | `FRONTEND_URL` | The https origin the browser sees. The handoff builds its redirect from it |
-| `LOGOUT_REDIRECT_LINK` | Where the app's Sign out navigates — the platform portal |
-| `SESSION_TTL_SECONDS` | devise_token_auth token lifespan, so Chatwoot expires with the rest of the bundle instead of holding its own 2-month default (`config/initializers/devise_token_auth.rb`) |
+| `LOGOUT_REDIRECT_URL` | Where the app's Sign out navigates: the platform portal. Must be an absolute `http(s)` URL; missing or invalid, Sign out logs an error and does nothing. Not upstream's `LOGOUT_REDIRECT_LINK`, which is read from the database only and also drives the 401 re-auth path |
+| `SESSION_COOKIE_MAX_AGE_SECONDS` | devise_token_auth token lifespan, so Chatwoot expires with the rest of the bundle. Unset or not a positive integer: upstream's 2-month default (`config/initializers/devise_token_auth.rb`) |
+| `SMB_CORPORATE_ID` | Optional. When set, only principals of that corporate are admitted; see [Corporate-tenant gate](#corporate-tenant-gate) |
+| `CHATWOOT_SMB_DEFAULT_ACCOUNT_ID` | Optional. The account every SSO user joins as `agent`. Unset: the oldest active account. Set to an id that doesn't exist: nobody is joined |
+| `ENABLE_ACCOUNT_SIGNUP` | Keep `false`. `POST /api/v1/accounts` is 404 under SSO anyway |
+| `GOOGLE_OAUTH_CLIENT_ID` / `_SECRET` | Leave unset. The callbacks are 404 under SSO; unset is defence in depth |
 
 ## Why trusting the headers is safe
 
@@ -54,10 +58,66 @@ Deployment requirements that follow from this:
 - Every protected router carries `strip-auth-headers`, then `security-headers`, then
   `mpass-auth` — in that order.
 - Bypass routers (no `mpass-auth`) still carry `strip-auth-headers`, so a request that
-  skips authentication can never assert an identity either. They are needed for
-  `/health`, the precompiled assets (`/packs/`, `/vite/`, `/assets/`), and the
-  end-customer surfaces that no mPass session can reach: `/widget`, `/api/v1/widget`,
-  `/webhooks/`, `/public/api/`.
+  skips authentication can never assert an identity either. The list is
+  [below](#forwardauth-bypass-list).
+
+## ForwardAuth bypass list
+
+This is the source of truth for the `chatwoot-bypass` routers;
+`docker/mpass/docker-compose.devkit.yml` implements it. Everything not listed stays on
+the protected router, including all of `/api/v1/accounts/*` (the agent-facing webhook
+CRUD at `/api/v1/accounts/:id/webhooks` among it) and `/audio/dashboard/`.
+
+Chatwoot is the only bundle app that serves people who have no mPass account: website
+visitors using the chat widget, and customers opening help-center or survey links. Behind
+`mpass-auth` they would get a QR page they cannot scan, so those surfaces bypass it.
+
+**Bypassed, any method:**
+
+| Path | Why |
+|---|---|
+| `Path(/health)` | Container health probe |
+| `PathPrefix(/packs/)`, `/vite/`, `/assets/` | Precompiled assets, fetched without a session (the widget loads them too) |
+| `PathPrefix(/widget)` | The widget iframe on customer websites. Its router drops `security-headers@docker`, whose `X-Frame-Options: SAMEORIGIN` would stop it loading; the rest of the header set is re-added |
+| `PathPrefix(/api/v1/widget)` | The widget's API. Authenticated by the widget's own website token and contact JWT, never by a user session |
+| `PathPrefix(/public/api/)` | Public inbox API and the CSAT survey's data, authenticated by per-inbox/per-conversation identifiers |
+| `Path(/cable)` | ActionCable. The widget's live updates use it, so behind `mpass-auth` agent replies never reach the bubble. **Trade-off:** the endpoint is shared with the dashboard, so an agent's WebSocket handshake is no longer checked against SSO. Each subscription still needs the user's secret `pubsub_token` (`RoomChannel`), which is upstream's only guard, so a leaked agent token would stream that account's events without an SSO session. ForwardAuth only ever checked the handshake, so an open socket already outlived "Log out of all apps" before this |
+
+**Bypassed, `GET`/`HEAD` only:**
+
+| Path | Why |
+|---|---|
+| `PathPrefix(/audio/widget/)` | The widget's new-message sound (static mp3) |
+| `PathPrefix(/hc/)` | Public help center; the widget also fetches its articles. Every route is a read |
+| `PathPrefix(/survey/responses/)` | CSAT page emailed to customers; a page shell whose data comes from `/public/api/` |
+
+**Channel inbound callbacks: not bypassed by default.** A provider cannot hold an mPass
+session, so a channel's inbound path must be bypassed for that channel to work. Bypass only
+the channels a deployment enables, each with an exact `Path`/`PathRegexp` and method, and
+only where Chatwoot verifies the caller:
+
+| Route | Caller verification in Chatwoot | Bypass when enabled? |
+|---|---|---|
+| `POST /webhooks/whatsapp/:phone_number`, `GET` (verify) | Meta `X-Hub-Signature-256`, always required | Yes |
+| `POST /webhooks/instagram`, `GET` (verify) | Meta signature, always required | Yes |
+| `/bot` (Facebook Messenger) | Messenger signature against the page's app secret or `FB_APP_SECRET` | Yes, with `FB_APP_SECRET` set |
+| `POST /webhooks/tiktok` | `Tiktok-Signature` HMAC | Yes |
+| `POST /webhooks/shopify` | `X-Shopify-Hmac-SHA256`; 401 without `SHOPIFY_CLIENT_SECRET` | Yes |
+| `POST /webhooks/line/:line_channel_id` | `x-line-signature`, checked in `Webhooks::LineEventsJob` (the request itself is accepted and queued) | Yes, accepting that unsigned requests still enqueue a job |
+| `POST /api/v1/integrations/webhooks` (Slack) | Slack signature, **skipped when `SLACK_SIGNING_SECRET` is blank** | Only with `SLACK_SIGNING_SECRET` set |
+| `GET`/`POST /webhooks/twitter` | CRC only on `GET`; events are not signature-checked | No |
+| `POST /webhooks/sms/:phone_number` | None | No, unless the risk is accepted in writing |
+| `POST /webhooks/telegram/:bot_token` | Only the secret in the path | No, unless the risk is accepted in writing |
+| `/twilio/callback`, `/twilio/delivery_status`, EE `/twilio/voice/*` | None (no `X-Twilio-Signature` check) | No, unless the risk is accepted in writing |
+| `POST /rails/action_mailbox/:service/inbound_emails` (email inboxes) | Action Mailbox ingress: HTTP basic auth with `RAILS_INBOUND_EMAIL_PASSWORD` (relay), or the provider's signing key (Mailgun, Mandrill, …) | Yes for the configured ingress only, with its password or key set |
+| `/enterprise/webhooks/stripe`, `/enterprise/webhooks/firecrawl` (EE) | Provider signatures | Only if the feature is used; exact `Path` |
+
+Never bypass a `/webhooks` prefix: it would also expose the channels that verify nothing.
+
+**Still gated, known breakage:** `/rails/active_storage/*`, so agent avatars and
+attachments don't load in the widget. Bypassing it matches stock Chatwoot, but blob links
+don't expire by default, so a leaked link to an agent-only attachment would work without a
+login. Decide it with link expiry, not by path.
 
 ## Login
 
@@ -82,13 +142,33 @@ Two loop guards on step 1, both load-bearing: the handoff's landing page carries
 `sso_auth_token` and its failure landing carries `error`, and re-entering the handoff on
 either would bounce the browser until it gave up.
 
+## Corporate-tenant gate
+
+ForwardAuth admits every principal in the Cognito pool. When `SMB_CORPORATE_ID` is set,
+`Mpass::ProxyIdentity.corporate_claims_ok?` decodes `X-Auth-Request-Access-Token` (second
+JWT segment, base64url, no signature check: it rides the same trust chain as the identity
+header) and requires both `custom:is_corporate == "true"` and
+`custom:corporate_id == SMB_CORPORATE_ID`. A missing or undecodable token fails the check.
+Unset, the check is skipped.
+
+- **Handoff:** `Sso::ProxyLoginController` answers `403` before the user builder runs, so
+  a refused principal leaves no user row, and it clears the SPA cookie.
+- **Every request after it:** a session whose principal now fails the check is treated as
+  a mismatch and flushed on both reconciliation paths (below), and the handoff then refuses
+  it. So a revoked corporate membership is enforced on the next request, not only at the
+  next login.
+
+This matters more on Chatwoot than elsewhere: an auto-provisioned `agent` can read
+end-customer conversations.
+
 ## Identity and provisioning
 
 `lib/mpass/proxy_identity.rb`:
 
 - `X-Auth-Request-Email` is the only identity source. `X-Auth-Request-User` (the Cognito
   `sub`) is never used as a fallback. The value is stripped and downcased, and the same normalisation is applied to the DB lookup.
-- A value containing `@` is used as is; a bare value becomes
+- A value with an `@` (not first) followed at least one character later by a `.` is used
+  as is; anything else, including `a@b`, is a bare value and becomes
   `<value>@${DEFAULT_EMAIL_DOMAIN}`. Moneta's Cognito pool returns the literal
   placeholder `cognito:default_val` for the email claim, so identity usually arrives as
   a bare numeric `cognito:username`.
@@ -98,8 +178,17 @@ either would bounce the browser until it gave up.
   number, and never persists a `sub` UUID.
 
 `app/builders/mpass_user_builder.rb` resolves or creates the user (`User.from_email`,
-exact match — never `LIKE`), then joins the oldest `Account` at role `agent` on **every**
-login, not only at creation. Two deliberate differences from `SamlUserBuilder`:
+exact match — never `LIKE`). On **every** login, not only at creation, a user with no
+account membership at all is joined at role `agent` to `CHATWOOT_SMB_DEFAULT_ACCOUNT_ID`,
+or to the oldest active account when that's unset. No account yet: nobody is joined.
+
+A user who already belongs to any account is left alone, so an admin removing an agent
+from one account is not undone while they keep another. **Removing an agent's last
+membership is undone on their next login**: with no rows left they are joined again. To
+revoke access, remove the user in mPass (or exclude them with `SMB_CORPORATE_ID`), not the
+membership.
+
+Two deliberate differences from `SamlUserBuilder`:
 
 - **No multi-account rejection.** A user legitimately spans accounts.
 - **No role mapping.** mPass asserts identity only; elevation is an in-app action.
@@ -147,11 +236,21 @@ what the SPA renders, and `DISABLE_USER_PROFILE_UPDATE` is honoured only by the 
 | `POST /api/v1/accounts` (self-registration) | `404` |
 | `PUT /api/v1/profile` password change | rejected |
 | `PUT /api/v1/profile` `email` | dropped from the permitted params — changing it breaks the header lookup and locks the user out |
+| `POST`/`PUT`/`PATCH`/`DELETE /auth` (devise_token_auth registrations) | `404` — `PUT` set a password without the current one, `POST` signed up, `DELETE` deleted the account |
+| `/auth/:provider/callback`, `/omniauth/:provider/callback`, `/auth/failure`, `/omniauth/failure` (Google OAuth, SAML) | `404` — a second identity path |
+| `POST /api/v1/auth/saml_login` (EE) | `404` |
+| `/super_admin/*`, `/monitoring/sidekiq` | **not routed** — the super-admin password login and the Devise defaults mounted beside it (password reset, sign-up, confirmation) |
 
 `404` rather than `403`: under SSO these endpoints do not conceptually exist, and a `403`
 would confirm the route is there to probe further. The gate lives in
 `MpassLocalAuthGuard`; `reject_local_login_under_sso` is the login-specific variant that
-lets the handoff's own POST through.
+lets the handoff's own POST through. The super-admin console is removed with a route
+constraint instead, checked per request.
+`spec/requests/sso/local_auth_route_inventory_spec.rb` fails CI when a controller behind an
+auth route lacks the guard.
+
+**No super-admin console under SSO.** It had its own password login outside mPass.
+Operators use `rails console` for what it did (see [Operations](#operations)).
 
 Client side, `v3/helpers/ssoRouteGuard.js` hard-redirects the signup, password-reset and
 confirmation routes, the login page renders "Continue with mPass" instead of the local
@@ -161,7 +260,9 @@ enrolment.
 ## Logout
 
 Per-app Sign out is **navigation-only**: it clears local client state and navigates to
-`LOGOUT_REDIRECT_LINK`. It does not call `DELETE /auth/sign_out` and does not end the SSO
+`LOGOUT_REDIRECT_URL`. If that is missing or not an absolute `http(s)` URL it logs an error
+and does nothing: falling back to `/` would re-enter the handoff and sign the user straight
+back in. It does not call `DELETE /auth/sign_out` and does not end the SSO
 session — the next request would re-establish one from the identity header anyway, so the
 call only added a failure mode. Ending the session is the portal's "Log out of all apps",
 which clears the shared oauth2-proxy cookie.
@@ -184,16 +285,66 @@ directions (gated under SSO, untouched without it).
 
 ## Known deviations and open items
 
-- **No corporate-tenant gate.** Plane rejects principals whose `custom:corporate_id`
-  claim does not match `SMB_CORPORATE_ID`; Chatwoot has no equivalent, so any mPass
-  principal in the pool that reaches the host is provisioned at `agent`, which on this
-  app means access to end-customer conversations. Harmless while the deployment is
-  single-tenant. Tracked in `sso-rules-moneta/apps/chatwoot/security.md` §G5.
 - **`cw_d_session_info` cannot be `httpOnly`.** The SPA has to read it to build its
   request headers. `secure` is derived from the page's scheme and `sameSite: Lax` is set
-  globally; the cookie carries a token whose lifetime is `SESSION_TTL_SECONDS`. This is
+  globally; the cookie carries a token whose lifetime is `SESSION_COOKIE_MAX_AGE_SECONDS`. This is
   architectural, not fixable here, and is recorded as a written tradeoff rather than a
   silent gap.
-- **Auto-join applies no account status filter**, so a suspended account is a valid
-  target. Not exploitable — the request is refused at `Current.account` resolution — but
-  it writes a membership row that grants nothing.
+- **Platform API login links** (`/platform/api/v1/users/:id/login`) stay open: machine to
+  machine, and a Platform app can already read the user's access token.
+
+## Operations
+
+What the bundle needs to run this fork.
+
+**Image.** Built from `docker/Dockerfile` for the bundle's hosts:
+
+```bash
+docker buildx build --platform linux/amd64 -f docker/Dockerfile -t <registry>/chatwoot:<tag> --push .
+```
+
+Assets are precompiled into the image, so every frontend change needs a rebuild.
+
+**Processes.** One image, two services with the same environment:
+
+| Service | Command | Network |
+|---|---|---|
+| web | `bundle exec rails s -p 3000 -b 0.0.0.0` | frontend and backend; Traefik routes to port 3000; never publish the port |
+| worker | `bundle exec sidekiq -C config/sidekiq.yml` | backend only; no Traefik router |
+
+**Health check:** `GET /health` (on the bypass list).
+
+**Dependencies.**
+
+- PostgreSQL 16 with the `pgvector` extension (`enable_extension "vector"` in
+  `db/schema.rb`); the devkit uses `pgvector/pgvector:pg16`. `POSTGRES_HOST`, `_PORT`,
+  `_DATABASE`, `_USERNAME`, `_PASSWORD`.
+- Redis (`REDIS_URL`), for Sidekiq, ActionCable and the handoff's one-time tokens. In the
+  bundle, use a Valkey DB number the edge doesn't use (8 and 10 are taken).
+- `SECRET_KEY_BASE`, `FRONTEND_URL` (the https origin), `FORCE_SSL=false` (TLS ends at
+  Traefik), `RAILS_ENV=production`, `INSTALLATION_ENV=docker`.
+
+**First-run bootstrap.** Chatwoot's first-visitor onboarding form is `404` under SSO (it
+would make the first mPass visitor a super admin with a local password), so bootstrap is a
+deployment step. Run it before the web process starts; it is idempotent:
+
+```bash
+bundle exec rails db:chatwoot_prepare
+bundle exec rails runner 'Account.exists? || Account.create!(name: "<SMB name>"); Redis::Alfred.delete(Redis::Alfred::CHATWOOT_INSTALLATION_ONBOARDING)'
+```
+
+Set `CHATWOOT_SMB_DEFAULT_ACCOUNT_ID` to that account's id to pin auto-join to it.
+
+**Promote an administrator.** Auto-join only ever grants `agent`. The user must have
+logged in once through mPass:
+
+```bash
+bundle exec rails runner '
+  user = User.from_email("<email>") or abort "log in through mPass first"
+  AccountUser.find_by!(user: user, account_id: <account id>).administrator!'
+```
+
+`agent!` demotes. The super-admin console isn't available under SSO; use `rails console`
+for installation config, accounts and users.
+
+**Smoke test:** [`docs/chatwoot-smoke-test.md`](../docs/chatwoot-smoke-test.md).
