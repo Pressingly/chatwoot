@@ -39,10 +39,13 @@ RSpec.describe 'local-credential route inventory under SSO', type: :request do
     Rails.application.reload_routes!
   end
 
+  # A route whose controller is not loaded (CE build: enterprise/ stripped, so
+  # auth#saml_login) raises a routing error, so it exposes no surface to guard.
   def local_auth_controllers
     Rails.application.routes.routes
          .filter_map { |route| route.defaults[:controller] }
          .grep(local_auth_controller_pattern).uniq
+         .select { |name| "#{name.camelize}Controller".safe_constantize }
   end
 
   it 'guards every local-credential controller the routes expose' do
