@@ -3,6 +3,8 @@ import { createRouter, createWebHistory } from 'vue-router';
 import routes from './routes';
 import AnalyticsHelper from 'dashboard/helper/AnalyticsHelper';
 import { validateRouteAccess } from '../helpers/RouteHelper';
+import { frontendURL } from 'dashboard/helper/URLHelper';
+import { isSSOBlockedRoute } from '../helpers/ssoRouteGuard';
 
 export const router = createRouter({ history: createWebHistory(), routes });
 
@@ -15,6 +17,10 @@ export const initalizeRouter = () => {
         path: to.path,
         name: to.name,
       });
+    }
+
+    if (isSSOBlockedRoute(to)) {
+      return next(frontendURL('login'));
     }
 
     return validateRouteAccess(to, next, window.chatwootConfig);

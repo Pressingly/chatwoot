@@ -1,9 +1,16 @@
 class Api::V1::ProfilesController < Api::BaseController
+  include MpassLocalAuthGuard
   before_action :set_user
+  before_action :reject_local_auth_under_sso, only: [:resend_confirmation]
 
   def show; end
 
   def update
+    # audit row 15 / Threat 5. Under SSO, email and password are owned by Cognito.
+    # Enforced server-side because the existing DISABLE_USER_PROFILE_UPDATE flag is
+    # frontend-only — the API accepted these regardless of it.
+    render_could_not_create_error('Password is managed by your identity provider') and return if sso_mode? && password_params[:password].present?
+
     if password_params[:password].present?
       render_could_not_create_error('Invalid current password') and return unless @user.valid_password?(password_params[:current_password])
 
@@ -57,8 +64,14 @@ class Api::V1::ProfilesController < Api::BaseController
     params.require(:profile).permit(:account_id, :auto_offline)
   end
 
+  def sso_mode?
+    Mpass::ProxyIdentity.sso_mode?
+  end
+
+  # Changing the local email breaks the X-Auth-Request-Email lookup and locks the
+  # user out on their next request, so :email is not permitted under SSO.
   def profile_params
-    params.require(:profile).permit(
+    permitted = params.require(:profile).permit(
       :email,
       :name,
       :display_name,
@@ -67,6 +80,8 @@ class Api::V1::ProfilesController < Api::BaseController
       :account_id,
       ui_settings: {}
     )
+    permitted.delete(:email) if sso_mode?
+    permitted
   end
 
   def custom_attributes_params

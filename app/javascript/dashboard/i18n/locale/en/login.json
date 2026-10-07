@@ -36,6 +36,10 @@
       "API": {
         "ERROR_MESSAGE": "SSO authentication failed. Please check your credentials and try again."
       }
+    },
+    "MPASS": {
+      "LABEL": "Continue with mPass",
+      "SUBTITLE": "This workspace uses mPass single sign-on."
     }
   }
 }

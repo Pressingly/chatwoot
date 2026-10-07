@@ -1,8 +1,12 @@
 class Api::V1::AccountsController < Api::BaseController
   include AuthHelper
+  include MpassLocalAuthGuard
 
   skip_before_action :authenticate_user!, :set_current_user, :handle_with_exception,
                      only: [:create], raise: false
+  # audit row 15 — self-registration creates a local credential outside Cognito.
+  # Scoped to :create; the rest of this controller is normal authenticated API.
+  before_action :reject_local_auth_under_sso, only: [:create]
   before_action :check_signup_enabled, only: [:create]
   before_action :ensure_account_name, only: [:create]
   before_action :validate_captcha, only: [:create]

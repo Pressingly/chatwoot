@@ -1,5 +1,10 @@
 class DeviseOverrides::OmniauthCallbacksController < DeviseTokenAuth::OmniauthCallbacksController
   include EmailHelper
+  include MpassLocalAuthGuard
+  # Google OAuth and SAML are second login doors under SSO (security.md G10). This
+  # is the only controller that consumes omniauth.auth, so no provider callback
+  # can issue a session. prepend_ so it runs before the parent's filters.
+  prepend_before_action :reject_local_auth_under_sso
 
   def omniauth_success
     get_resource_from_auth_hash

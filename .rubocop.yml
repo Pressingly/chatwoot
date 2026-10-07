@@ -19,6 +19,10 @@ Metrics/ClassLength:
     - 'app/models/message.rb'
     - 'app/models/conversation.rb'
     - 'config/initializers/rack_attack.rb'
+    # Upstream sits exactly on the 175 cap, so the two lines this fork adds for the
+    # mPass local-login gate (audit row 15) trip it. The gate's body lives in
+    # MpassLocalAuthGuard; only the include and the before_action are here.
+    - 'app/controllers/devise_overrides/sessions_controller.rb'
 
 Metrics/MethodLength:
   Max: 19
