@@ -23,7 +23,7 @@ bootstrap done (one account, onboarding flag cleared; see `doc/mpass_sso.md` §O
 | 6 | Portal "Log out of all apps", then reload `HOST` | QR page |
 | 7 | Log in as user A, "Log out of all apps", log in as user B, reload the open Chatwoot tab | Served as B, never A. Repeat with a conversation open (XHR path) |
 | 8 | Log in again as the same user, then re-run step 2 | Still one user row and one membership |
-| 9 | Open the widget on a test page (or `https://HOST/widget?website_token=<token>`) without an mPass session; send a message and reply from the dashboard | Widget loads, the reply arrives live, the sound plays |
+| 9 | Open the widget on a test page (or `https://HOST/widget?website_token=<token>`) without an mPass session; send a message and reply from the dashboard. The replying agent must be a member of the website inbox: an agent only sees an inbox's conversations once added to it | Widget loads, the reply arrives live, the sound plays |
 
 ## With curl
 
@@ -37,7 +37,7 @@ bootstrap done (one account, onboarding flag cleared; see `doc/mpass_sso.md` §O
 | 13 | `curl -sko /dev/null -w '%{http_code}\n' https://HOST/health` | `200` without a session |
 | 14 | Each bypassed path in `doc/mpass_sso.md` §ForwardAuth bypass list, without a cookie | Reaches Chatwoot (no redirect to mPass); the `GET`-only ones refuse `POST` with a redirect to mPass |
 | 15 | `curl -skI https://HOST/api/v1/accounts/1/webhooks` and `https://HOST/audio/dashboard/` without a cookie | `302` to the mPass login (not bypassed) |
-| 16 | With `-b "_oauth2_proxy=$C"`: `POST /auth/sign_in` with an email and password; `POST`/`PUT /auth/password`; `PUT`/`POST`/`DELETE /auth`; `POST /resend_confirmation`; `POST /api/v1/accounts`; `GET /omniauth/google_oauth2/callback`; `POST /api/v1/auth/saml_login`; `POST /installation/onboarding` | `404` for every one |
+| 16 | With `-b "_oauth2_proxy=$C"`: `POST /auth/sign_in` with an email and password; `POST`/`PUT /auth/password`; `PUT`/`POST`/`DELETE /auth`; `POST /resend_confirmation`; `POST /api/v1/accounts`; `GET /omniauth/google_oauth2/callback`; `POST /api/v1/auth/saml_login`; `POST /installation/onboarding` | `404` for every one, except `GET /omniauth/google_oauth2/callback`: no session, as `302` to `/auth/sign_in` or `404` (the OmniAuth middleware fails before the callback controller runs) |
 | 17 | With `-b "_oauth2_proxy=$C"`: `GET /super_admin/sign_in`, `GET /monitoring/sidekiq` | `404` |
 | 18 | `curl -skI https://HOST/app` with the cookie | `Strict-Transport-Security`, `X-Frame-Options`, `X-Content-Type-Options: nosniff`, `Referrer-Policy` present |
 
@@ -48,6 +48,6 @@ bootstrap done (one account, onboarding flag cleared; see `doc/mpass_sso.md` §O
 | 19 | Unset `DEFAULT_EMAIL_DOMAIN` (the devkit sends a bare mPass id) and open `HOST` | Login refused (`/app/login?error=sso_failed`); no user row with a made-up address |
 | 20 | Set `SMB_CORPORATE_ID` to a value your account doesn't have (on the app only, not in the edge's `.env`) | `403` at `/auth/sso/proxy-login`, no new user row. An already-open dashboard is flushed on its next request |
 | 21 | Set `SMB_CORPORATE_ID` to your account's corporate id | Login works |
-| 22 | Unset `LOGOUT_REDIRECT_URL`, then Sign out | Nothing happens and the browser console logs an error; you are not signed back in through `/` |
+| 22 | Unset `LOGOUT_REDIRECT_URL`, then Sign out. The devkit compose always sets it, so override it to empty for the `chatwoot` service (e.g. `LOGOUT_REDIRECT_URL: ''` in an extra `-f` override file); empty counts as unset | Nothing happens and the browser console logs an error; you are not signed back in through `/` |
 
 Put every setting back afterwards.
