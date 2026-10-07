@@ -1,26 +1,32 @@
 # =============================================================================
 # Chatwoot behind the mPass SSO devkit (local testing only)
 # =============================================================================
-# Runs this fork against a running mpass-sso-devkit
-# (github.com/Pressingly/mpass-sso-devkit), which provides Traefik, the shared
-# `mpass-auth` ForwardAuth, the mPass login bridge, Valkey and the
-# frontend/backend networks. Production wiring lives in the platform bundle.
+# An extra compose file for github.com/Pressingly/mpass-sso-devkit, run INSIDE the
+# devkit's compose project (the devkit's Traefik only routes that project), which
+# provides Traefik, the shared `mpass-auth` ForwardAuth, the mPass login bridge,
+# Valkey and the frontend/backend networks. Production wiring lives in the platform
+# bundle. From the devkit checkout, with this fork cloned next to it as ../chatwoot:
 #
-#   1. Start the devkit (docker compose up -d in mpass-sso-devkit).
-#   2. cp docker/mpass/devkit.env.example docker/mpass/.env and fill it in.
-#   3. docker compose -f docker/mpass/docker-compose.devkit.yml up -d --build
+#   1. Append docker/mpass/devkit.env.example to the devkit's .env and fill it in.
+#   2. docker compose -f docker-compose.yml -f ../chatwoot/docker/mpass/docker-compose.devkit.yml up -d --build
 #
-# Host: https://chatwoot.foss.local.dev — a 3-label name, because the devkit's
-# certificate covers `foss.local.dev` and `*.foss.local.dev` only. A 4-label
-# host (support.foss.foss.local.dev) is NOT covered by that wildcard and the
-# browser would refuse the login redirect.
+# Relative paths below resolve against the devkit directory (the first -f file), so
+# the build context is ../chatwoot. The networks and Valkey are the devkit's own.
 #
-# Valkey is the devkit's (reached as `valkey` on the shared backend network).
-# It is in another compose project, so there is no depends_on on it: start the
-# devkit first, and restart Chatwoot if Valkey restarts (audit row 13).
+# Host: https://chatwoot.${PLATFORM_DOMAIN} (chatwoot.foss.local.dev). Add it to
+# /etc/hosts next to the devkit's own names. A 3-label name, because the devkit's
+# certificate covers `foss.local.dev` and `*.foss.local.dev` only; a 4-label host
+# (support.foss.foss.local.dev) is NOT covered and the browser would refuse the
+# login redirect.
+#
+# First start: the database is prepared and one Account created (see `command`).
+# Every SSO user joins it as `agent`. To promote one, after their first mPass login,
+# from the devkit directory:
+#   docker compose -f docker-compose.yml -f ../chatwoot/docker/mpass/docker-compose.devkit.yml \
+#     exec chatwoot bundle exec rails runner \
+#     'AccountUser.find_by!(user: User.from_email("<email>"), account: Account.first).administrator!'
+# `.agent!` demotes. There is no super-admin console under SSO (doc/mpass_sso.md).
 # =============================================================================
-
-name: chatwoot-devkit
 
 services:
 
@@ -46,15 +52,17 @@ services:
 
   chatwoot: &chatwoot
     build:
-      context: ../..
+      context: ../chatwoot
       dockerfile: ./docker/Dockerfile
     image: chatwoot-mpass:devkit
     restart: unless-stopped
     # NEVER add `ports:` — audit row 2. A published port is a way into the app
     # that never passes ForwardAuth, and the identity headers are trusted
     # without verification precisely because that path does not exist.
-    depends_on:
+    depends_on: &chatwoot-deps
       chatwoot-postgres:
+        condition: service_healthy
+      valkey:
         condition: service_healthy
     environment: &chatwoot-env
       RAILS_ENV: production
@@ -113,10 +121,6 @@ services:
       - backend
     labels:
       - traefik.enable=true
-      # Opt-in for the devkit's Traefik, which otherwise routes only its own project.
-      # Needs the devkit's provider constraint to accept this label; upstream
-      # mpass-sso-devkit does not yet (proposed there, not patched per fork).
-      - mpass-sso-devkit.app=true
       - traefik.http.services.chatwoot.loadbalancer.server.port=3000
 
       # Protected catch-all. The middleware order is load-bearing:
@@ -188,9 +192,7 @@ services:
   # HTTP and must never be routable.
   chatwoot-sidekiq:
     <<: *chatwoot
-    depends_on:
-      chatwoot-postgres:
-        condition: service_healthy
+    depends_on: *chatwoot-deps
     environment:
       <<: *chatwoot-env
     command: ['bundle', 'exec', 'sidekiq', '-C', 'config/sidekiq.yml']
@@ -198,14 +200,6 @@ services:
       - backend
     labels:
       - traefik.enable=false
-
-networks:
-  frontend:
-    name: ${SMB_NAME:-devkit}-frontend
-    external: true
-  backend:
-    name: ${SMB_NAME:-devkit}-backend
-    external: true
 
 volumes:
   chatwoot-postgres-data:
