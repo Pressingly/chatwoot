@@ -154,6 +154,17 @@ services:
       - traefik.http.routers.chatwoot-public-readonly.priority=20
       - traefik.http.routers.chatwoot-public-readonly.middlewares=strip-auth-headers@docker,security-headers@docker
 
+      # Help-center articles the widget opens in an iframe on customer sites
+      # (ArticleContainer.vue). Chatwoot drops X-Frame-Options exactly when
+      # show_plain_layout=true (Portals::BaseController#allow_iframe_requests);
+      # this router mirrors that condition, above the readonly router, so Traefik
+      # does not put the header back. Every other /hc/ page keeps SAMEORIGIN.
+      - traefik.http.routers.chatwoot-public-hc-plain.rule=Host(`chatwoot.${PLATFORM_DOMAIN}`) && PathPrefix(`/hc/`) && Query(`show_plain_layout`, `true`) && (Method(`GET`) || Method(`HEAD`))
+      - traefik.http.routers.chatwoot-public-hc-plain.entrypoints=websecure
+      - traefik.http.routers.chatwoot-public-hc-plain.service=chatwoot
+      - traefik.http.routers.chatwoot-public-hc-plain.priority=30
+      - traefik.http.routers.chatwoot-public-hc-plain.middlewares=strip-auth-headers@docker,chatwoot-widget-headers@docker
+
       # The end-customer surfaces. Unlike the other five apps, Chatwoot serves
       # people who are not mPass users at all: the chat widget on a customer's
       # website. Behind mpass-auth it would 302 to a QR page, which a customer

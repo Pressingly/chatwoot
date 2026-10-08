@@ -78,7 +78,7 @@ visitors using the chat widget, and customers opening help-center or survey link
 |---|---|
 | `Path(/health)` | Container health probe |
 | `PathPrefix(/packs/)`, `/vite/`, `/assets/` | Precompiled assets, fetched without a session (the widget loads them too) |
-| `PathPrefix(/widget)` | The widget iframe on customer websites. Its router drops `security-headers@docker`, whose `X-Frame-Options: SAMEORIGIN` would stop it loading; the rest of the header set is re-added |
+| `PathPrefix(/widget)` | The widget iframe on customer websites. Its router drops `security-headers@docker`, whose `X-Frame-Options: SAMEORIGIN` would stop it loading; the rest of the header set is re-added. The help-center plain layout needs the same treatment; see the GET/HEAD table |
 | `PathPrefix(/api/v1/widget)` | The widget's API. Authenticated by the widget's own website token and contact JWT, never by a user session |
 | `PathPrefix(/public/api/)` | Public inbox API and the CSAT survey's data, authenticated by per-inbox/per-conversation identifiers |
 | `Path(/cable)` | ActionCable. The widget's live updates use it, so behind `mpass-auth` agent replies never reach the bubble. **Trade-off:** the endpoint is shared with the dashboard, so an agent's WebSocket handshake is no longer checked against SSO. Each subscription still needs the user's secret `pubsub_token` (`RoomChannel`), which is upstream's only guard, so a leaked agent token would stream that account's events without an SSO session. ForwardAuth only ever checked the handshake, so an open socket already outlived "Log out of all apps" before this |
@@ -89,6 +89,7 @@ visitors using the chat widget, and customers opening help-center or survey link
 |---|---|
 | `PathPrefix(/audio/widget/)` | The widget's new-message sound (static mp3) |
 | `PathPrefix(/hc/)` | Public help center; the widget also fetches its articles. Every route is a read |
+| `PathPrefix(/hc/)` + `Query(show_plain_layout, true)` | Help-center articles the widget opens in an iframe on customer sites (`ArticleContainer.vue`). Chatwoot drops `X-Frame-Options` only for this layout (`Public::Api::V1::Portals::BaseController#allow_iframe_requests`), so this router uses the widget's header set without `security-headers` and Traefik does not put it back. Its priority sits above the `/hc/` router; every other `/hc/` page keeps `SAMEORIGIN` |
 | `PathPrefix(/survey/responses/)` | CSAT page emailed to customers; a page shell whose data comes from `/public/api/` |
 
 **Channel inbound callbacks: not bypassed by default.** A provider cannot hold an mPass
