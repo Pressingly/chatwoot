@@ -242,7 +242,9 @@ export default {
           :name="name"
           :display-name="displayName"
           :email="email"
-          :email-enabled="!globalConfig.disableUserProfileUpdate"
+          :email-enabled="
+            !globalConfig.disableUserProfileUpdate && !globalConfig.isSSOEnabled
+          "
           @update-user="updateProfile"
         />
       </div>
@@ -314,16 +316,22 @@ export default {
         </RadioCard>
       </div>
     </SectionLayout>
+    <!-- audit row 15: password is owned by Cognito under SSO. The server rejects
+         the change too (profiles_controller) — this only removes the affordance. -->
     <SectionLayout
-      v-if="!globalConfig.disableUserProfileUpdate"
+      v-if="
+        !globalConfig.disableUserProfileUpdate && !globalConfig.isSSOEnabled
+      "
       with-border
       :title="$t('PROFILE_SETTINGS.FORM.PASSWORD_SECTION.TITLE')"
       description=""
     >
       <ChangePassword />
     </SectionLayout>
+    <!-- audit row 15: enrolling a second factor Chatwoot enforces, while Cognito
+         owns the first, gives the user a lockout path mPass cannot unwind. -->
     <SectionLayout
-      v-if="isMfaEnabled"
+      v-if="isMfaEnabled && !globalConfig.isSSOEnabled"
       with-border
       :title="$t('PROFILE_SETTINGS.FORM.SECURITY_SECTION.TITLE')"
       :description="$t('PROFILE_SETTINGS.FORM.SECURITY_SECTION.NOTE')"

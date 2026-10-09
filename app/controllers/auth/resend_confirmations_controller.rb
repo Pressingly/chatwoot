@@ -5,6 +5,9 @@
 # Inherits from ActionController::API to avoid both issues entirely.
 # Rate-limited by Rack::Attack (IP + email) and gated by hCaptcha.
 class Auth::ResendConfirmationsController < ActionController::API
+  include MpassLocalAuthGuard
+  # Entire controller is a local-credential path; no action survives SSO.
+  before_action :reject_local_auth_under_sso
   def create
     return head(:ok) unless ChatwootCaptcha.new(params[:h_captcha_client_response]).valid?
 

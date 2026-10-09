@@ -1,4 +1,7 @@
 class Api::V1::Profile::MfaController < Api::BaseController
+  include MpassLocalAuthGuard
+  # Under SSO the credential is mPass's; a Chatwoot second factor is a lockout path.
+  before_action :reject_local_auth_under_sso, except: [:show]
   before_action :check_mfa_feature_available
   before_action :check_mfa_enabled, only: [:destroy, :backup_codes]
   before_action :check_mfa_disabled, only: [:create, :verify]

@@ -6,6 +6,7 @@ import { SESSION_STORAGE_KEYS } from 'dashboard/constants/sessionStorage';
 import { LocalStorage } from 'shared/helpers/localStorage';
 import SessionStorage from 'shared/helpers/sessionStorage';
 import { emitter } from 'shared/helpers/mitt';
+import { isSSOMode } from 'shared/helpers/ssoMode';
 import {
   ANALYTICS_IDENTITY,
   ANALYTICS_RESET,
@@ -30,8 +31,20 @@ export const getHeaderExpiry = response =>
 
 export const setAuthCredentials = response => {
   const expiryDate = getHeaderExpiry(response);
+  // audit row 12 — `secure` is DERIVED, never hardcoded: hardcoding true breaks
+  // local http dev, hardcoding false ships an insecure cookie to production.
+  // `sameSite: 'Lax'` is already set globally (Cookies.defaults, :16).
+  // `httpOnly` is impossible here by design — the SPA must read this cookie to
+  // build its request headers. That tradeoff is recorded in
+  // sso-rules-moneta/apps/chatwoot/security.md rather than left as a silent gap.
   Cookies.set('cw_d_session_info', JSON.stringify(response.headers), {
-    expires: differenceInDays(expiryDate, new Date()),
+    // Under SSO the TTL can be under a day (8h in the bundle); whole days would
+    // round it to 0 and the browser would drop the cookie on arrival.
+    expires: isSSOMode()
+      ? expiryDate
+      : differenceInDays(expiryDate, new Date()),
+    // SSO-only, like every fork change: stock Chatwoot keeps upstream's cookie.
+    secure: isSSOMode() && window.location.protocol === 'https:',
   });
   setUser(response.data.data, expiryDate);
 };
@@ -76,14 +89,15 @@ export const deleteIndexedDBOnLogout = async () => {
   localStorage.removeItem('cw-idb-names');
 };
 
-export const clearCookiesOnLogout = () => {
+export const clearCookiesOnLogout = redirectTo => {
   emitter.emit(CHATWOOT_RESET);
   emitter.emit(ANALYTICS_RESET);
   clearBrowserSessionCookies();
   clearLocalStorageOnLogout();
   clearSessionStorageOnLogout();
   const globalConfig = window.globalConfig || {};
-  const logoutRedirectLink = globalConfig.LOGOUT_REDIRECT_LINK || '/';
+  const logoutRedirectLink =
+    redirectTo || globalConfig.LOGOUT_REDIRECT_LINK || '/';
   window.location = logoutRedirectLink;
 };
 

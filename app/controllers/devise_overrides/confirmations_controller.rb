@@ -1,4 +1,7 @@
 class DeviseOverrides::ConfirmationsController < Devise::ConfirmationsController
+  include MpassLocalAuthGuard
+  # Entire controller is a local-credential path; no action survives SSO.
+  before_action :reject_local_auth_under_sso
   include AuthHelper
   skip_before_action :require_no_authentication, raise: false
   skip_before_action :authenticate_user!, raise: false

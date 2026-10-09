@@ -1,6 +1,10 @@
 require 'rails_helper'
 
 RSpec.describe SlackUploadsController do
+  # A local .env FRONTEND_URL (e.g. localhost:3000) differs from test.host and
+  # trips Rails' open-redirect guard; pin it so the spec is hermetic.
+  around { |example| with_modified_env(FRONTEND_URL: nil) { example.run } }
+
   describe 'GET #show' do
     context 'when a valid blob key is provided' do
       file = Rack::Test::UploadedFile.new('spec/assets/avatar.png', 'image/png')

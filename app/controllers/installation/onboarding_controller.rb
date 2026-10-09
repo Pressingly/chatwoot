@@ -1,4 +1,8 @@
 class Installation::OnboardingController < ApplicationController
+  include MpassLocalAuthGuard
+  # Under SSO the form would let the first mPass visitor mint a local-password
+  # SuperAdmin. Bootstrap is a deployment step instead (security.md G8).
+  before_action :reject_local_auth_under_sso
   before_action :ensure_installation_onboarding
 
   def index; end

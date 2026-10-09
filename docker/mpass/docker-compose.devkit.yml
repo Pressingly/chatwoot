@@ -1,0 +1,216 @@
+# =============================================================================
+# Chatwoot behind the mPass SSO devkit (local testing only)
+# =============================================================================
+# An extra compose file for github.com/Pressingly/mpass-sso-devkit, run INSIDE the
+# devkit's compose project (the devkit's Traefik only routes that project), which
+# provides Traefik, the shared `mpass-auth` ForwardAuth, the mPass login bridge,
+# Valkey and the frontend/backend networks. Production wiring lives in the platform
+# bundle. From the devkit checkout, with this fork cloned next to it as ../chatwoot:
+#
+#   1. Append docker/mpass/devkit.env.example to the devkit's .env and fill it in.
+#   2. docker compose -f docker-compose.yml -f ../chatwoot/docker/mpass/docker-compose.devkit.yml up -d --build
+#
+# Relative paths below resolve against the devkit directory (the first -f file), so
+# the build context is ../chatwoot. The networks and Valkey are the devkit's own.
+#
+# Host: https://chatwoot.${PLATFORM_DOMAIN} (chatwoot.foss.local.dev). Add it to
+# /etc/hosts next to the devkit's own names. A 3-label name, because the devkit's
+# certificate covers `foss.local.dev` and `*.foss.local.dev` only; a 4-label host
+# (support.foss.foss.local.dev) is NOT covered and the browser would refuse the
+# login redirect.
+#
+# First start: the database is prepared and one Account created (see `command`).
+# Every SSO user joins it as `agent`. To promote one, after their first mPass login,
+# from the devkit directory:
+#   docker compose -f docker-compose.yml -f ../chatwoot/docker/mpass/docker-compose.devkit.yml \
+#     exec chatwoot bundle exec rails runner \
+#     'AccountUser.find_by!(user: User.from_email("<email>"), account: Account.first).administrator!'
+# `.agent!` demotes. There is no super-admin console under SSO (doc/mpass_sso.md).
+# =============================================================================
+
+services:
+
+  # Chatwoot's own database. Backend network only: nothing outside the compose
+  # project may reach it, and no port is published.
+  chatwoot-postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: chatwoot_production
+      POSTGRES_USER: chatwoot
+      POSTGRES_PASSWORD: ${CHATWOOT_POSTGRES_PASSWORD:-chatwoot}
+    volumes:
+      - chatwoot-postgres-data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U chatwoot -d chatwoot_production']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  chatwoot: &chatwoot
+    build:
+      context: ../chatwoot
+      dockerfile: ./docker/Dockerfile
+    image: chatwoot-mpass:devkit
+    restart: unless-stopped
+    # NEVER add `ports:` — audit row 2. A published port is a way into the app
+    # that never passes ForwardAuth, and the identity headers are trusted
+    # without verification precisely because that path does not exist.
+    depends_on: &chatwoot-deps
+      chatwoot-postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    environment: &chatwoot-env
+      RAILS_ENV: production
+      NODE_ENV: production
+      INSTALLATION_ENV: docker
+      RAILS_LOG_TO_STDOUT: 'true'
+      SECRET_KEY_BASE: ${CHATWOOT_SECRET_KEY_BASE}
+
+      # TLS terminates at Traefik, so Rails itself speaks http on the backend
+      # network. FRONTEND_URL is the https origin the browser sees; the handoff
+      # builds its redirect from it (SsoAuthenticatable#generate_sso_link).
+      FRONTEND_URL: https://chatwoot.${PLATFORM_DOMAIN}
+      FORCE_SSL: 'false'
+
+      POSTGRES_HOST: chatwoot-postgres
+      POSTGRES_PORT: '5432'
+      POSTGRES_DATABASE: chatwoot_production
+      POSTGRES_USERNAME: chatwoot
+      POSTGRES_PASSWORD: ${CHATWOOT_POSTGRES_PASSWORD:-chatwoot}
+      # The edge's Valkey, on a DB number it does not use itself: 8 is
+      # oauth2-proxy's session store and 10 is mpass-auth-proxy's.
+      REDIS_URL: redis://valkey:6379/3
+
+      # --- the mPass contract ---------------------------------------------
+      # Turns on the ForwardAuth handoff and turns off every local credential
+      # path. Read from ENV on every request, never through GlobalConfig, so it
+      # cannot go stale in the database.
+      AUTH_TYPE: SSO
+      # Must match the edge's value, or the same mPass principal resolves to a
+      # different user row here than in the other apps.
+      DEFAULT_EMAIL_DOMAIN: ${DEFAULT_EMAIL_DOMAIN}
+      # Where the app's own Sign out navigates. Navigation only: it must not end
+      # the SSO session — that is the portal's "Log out of all apps". Not
+      # upstream's LOGOUT_REDIRECT_LINK: Chatwoot reads that key from its database
+      # only, and it also drives the 401 re-auth path, which must stay inside the app.
+      LOGOUT_REDIRECT_URL: https://${PLATFORM_DOMAIN}
+      # devise_token_auth token lifespan, so Chatwoot expires with the bundle
+      # instead of holding its own 2-month default.
+      SESSION_COOKIE_MAX_AGE_SECONDS: ${SESSION_COOKIE_MAX_AGE_SECONDS:-432000}
+      # Corporate-tenant gate; empty admits every mPass principal.
+      SMB_CORPORATE_ID: ${SMB_CORPORATE_ID:-}
+      ENABLE_ACCOUNT_SIGNUP: 'false'
+    # db:chatwoot_prepare loads the schema on an empty database and migrates an
+    # existing one, so a rebuild is safe to run repeatedly.
+    # Bootstrap replaces Chatwoot's first-visitor onboarding form, which is 404
+    # under SSO: ensure one Account exists for auto-join and clear the flag.
+    command:
+      - sh
+      - -c
+      - |
+        bundle exec rails db:chatwoot_prepare &&
+        bundle exec rails runner 'Account.exists? || Account.create!(name: "Moneta Support"); Redis::Alfred.delete(Redis::Alfred::CHATWOOT_INSTALLATION_ONBOARDING)' &&
+        bundle exec rails s -p 3000 -b 0.0.0.0
+    networks:
+      - frontend
+      - backend
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.chatwoot.loadbalancer.server.port=3000
+
+      # Protected catch-all. The middleware order is load-bearing:
+      # strip-auth-headers deletes anything the client sent, THEN mpass-auth adds
+      # the verified values. Reversed, a browser could name its own identity.
+      - traefik.http.routers.chatwoot-secure.rule=Host(`chatwoot.${PLATFORM_DOMAIN}`)
+      - traefik.http.routers.chatwoot-secure.entrypoints=websecure
+      - traefik.http.routers.chatwoot-secure.service=chatwoot
+      - traefik.http.routers.chatwoot-secure.priority=10
+      - traefik.http.routers.chatwoot-secure.middlewares=strip-auth-headers@docker,security-headers@docker,mpass-auth@docker
+
+      # Paths that must answer without a login. They keep strip-auth-headers, so
+      # a request arriving here can still never assert an identity — it simply
+      # has none, which is why the app's entry redirect does not fire on them.
+      #   /health                    container health probe
+      #   /packs/, /vite/, /assets/  precompiled assets, fetched anonymously
+      - traefik.http.routers.chatwoot-public.rule=Host(`chatwoot.${PLATFORM_DOMAIN}`) && (Path(`/health`) || PathPrefix(`/packs/`) || PathPrefix(`/vite/`) || PathPrefix(`/assets/`))
+      - traefik.http.routers.chatwoot-public.entrypoints=websecure
+      - traefik.http.routers.chatwoot-public.service=chatwoot
+      - traefik.http.routers.chatwoot-public.priority=20
+      - traefik.http.routers.chatwoot-public.middlewares=strip-auth-headers@docker,security-headers@docker
+
+      # Read-only customer-facing pages, GET/HEAD only: the widget's new-message
+      # sound (/audio/widget/, static mp3), the public help center (/hc/, every
+      # route is a read; the widget also fetches its articles), and the CSAT survey
+      # page emailed to customers (/survey/responses/, a page shell; its data goes
+      # through /public/api/, already public). /audio/dashboard/ stays gated.
+      - traefik.http.routers.chatwoot-public-readonly.rule=Host(`chatwoot.${PLATFORM_DOMAIN}`) && (PathPrefix(`/audio/widget/`) || PathPrefix(`/hc/`) || PathPrefix(`/survey/responses/`)) && (Method(`GET`) || Method(`HEAD`))
+      - traefik.http.routers.chatwoot-public-readonly.entrypoints=websecure
+      - traefik.http.routers.chatwoot-public-readonly.service=chatwoot
+      - traefik.http.routers.chatwoot-public-readonly.priority=20
+      - traefik.http.routers.chatwoot-public-readonly.middlewares=strip-auth-headers@docker,security-headers@docker
+
+      # Help-center articles the widget opens in an iframe on customer sites
+      # (ArticleContainer.vue). Chatwoot drops X-Frame-Options exactly when
+      # show_plain_layout=true (Portals::BaseController#allow_iframe_requests);
+      # this router mirrors that condition, above the readonly router, so Traefik
+      # does not put the header back. Every other /hc/ page keeps SAMEORIGIN.
+      - traefik.http.routers.chatwoot-public-hc-plain.rule=Host(`chatwoot.${PLATFORM_DOMAIN}`) && PathPrefix(`/hc/`) && Query(`show_plain_layout`, `true`) && (Method(`GET`) || Method(`HEAD`))
+      - traefik.http.routers.chatwoot-public-hc-plain.entrypoints=websecure
+      - traefik.http.routers.chatwoot-public-hc-plain.service=chatwoot
+      - traefik.http.routers.chatwoot-public-hc-plain.priority=30
+      - traefik.http.routers.chatwoot-public-hc-plain.middlewares=strip-auth-headers@docker,chatwoot-widget-headers@docker
+
+      # The end-customer surfaces. Unlike the other five apps, Chatwoot serves
+      # people who are not mPass users at all: the chat widget on a customer's
+      # website. Behind mpass-auth it would 302 to a QR page, which a customer
+      # cannot scan. Inbound provider webhooks are NOT bypassed: several (SMS,
+      # Telegram) verify nothing upstream, so bypass only an enabled channel, by
+      # exact path and method, and only one that checks signatures.
+      #
+      # Both are internet-facing paths reachable without authentication, which is
+      # a materially wider surface than any other app in the bundle has. They are
+      # scoped to these prefixes and nothing else; the dashboard, the API and the
+      # admin surfaces stay on the protected router above.
+      #
+      # /cable (ActionCable) is here because the widget's live updates use it and
+      # a website visitor has no mPass session: behind mpass-auth, agent replies
+      # never reach the bubble. It is shared with the dashboard, so for agents SSO
+      # is no longer checked at WebSocket handshake. Every subscription still needs
+      # a secret pubsub_token (RoomChannel), which is upstream Chatwoot's only
+      # guard; a leaked agent token would stream that account's events without an
+      # SSO session. ForwardAuth already only checked the handshake, so an open
+      # socket outlived "Log out of all apps" before this change too.
+      - traefik.http.routers.chatwoot-public-widget.rule=Host(`chatwoot.${PLATFORM_DOMAIN}`) && (PathPrefix(`/widget`) || PathPrefix(`/api/v1/widget`) || PathPrefix(`/public/api/`) || Path(`/cable`))
+      - traefik.http.routers.chatwoot-public-widget.entrypoints=websecure
+      - traefik.http.routers.chatwoot-public-widget.service=chatwoot
+      - traefik.http.routers.chatwoot-public-widget.priority=20
+      # Not security-headers@docker: its X-Frame-Options: SAMEORIGIN stops the
+      # widget iframe loading on any customer site. Chatwoot drops that header on
+      # /widget itself (WidgetsController#allow_iframe_requests); Traefik must not
+      # put it back. The rest of the set is kept.
+      - traefik.http.routers.chatwoot-public-widget.middlewares=strip-auth-headers@docker,chatwoot-widget-headers@docker
+      - traefik.http.middlewares.chatwoot-widget-headers.headers.stsSeconds=31536000
+      - traefik.http.middlewares.chatwoot-widget-headers.headers.stsIncludeSubdomains=true
+      - traefik.http.middlewares.chatwoot-widget-headers.headers.contentTypeNosniff=true
+      - traefik.http.middlewares.chatwoot-widget-headers.headers.referrerPolicy=strict-origin-when-cross-origin
+
+  # Background jobs. Same image and environment, no Traefik router — it serves no
+  # HTTP and must never be routable.
+  chatwoot-sidekiq:
+    <<: *chatwoot
+    depends_on: *chatwoot-deps
+    environment:
+      <<: *chatwoot-env
+    command: ['bundle', 'exec', 'sidekiq', '-C', 'config/sidekiq.yml']
+    networks:
+      - backend
+    labels:
+      - traefik.enable=false
+
+volumes:
+  chatwoot-postgres-data:

@@ -15,3 +15,5 @@ vendor/bundle
 .DS_Store
 *.swp
 *~
+# Devkit env for docker/mpass/docker-compose.devkit.yml (secrets)
+docker/mpass/.env

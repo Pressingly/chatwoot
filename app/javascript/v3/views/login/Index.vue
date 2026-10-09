@@ -8,6 +8,7 @@ import { useVuelidate } from '@vuelidate/core';
 import { SESSION_STORAGE_KEYS } from 'dashboard/constants/sessionStorage';
 import SessionStorage from 'shared/helpers/sessionStorage';
 import { useBranding } from 'shared/composables/useBranding';
+import { isSSOMode, SSO_HANDOFF_PATH } from 'shared/helpers/ssoMode';
 import AnalyticsHelper from 'dashboard/helper/AnalyticsHelper';
 import { SESSION_EVENTS } from 'dashboard/helper/AnalyticsHelper/events';
 
@@ -107,10 +108,34 @@ export default {
     showSamlLogin() {
       return this.allowedLoginMethods.includes('saml');
     },
+    // Read per request from window.globalConfig, never from the build: the same
+    // bundle serves an SSO and a non-SSO deployment.
+    isSSOMode() {
+      return isSSOMode();
+    },
+    ssoHandoffPath() {
+      return SSO_HANDOFF_PATH;
+    },
+    // Under SSO this page is only ever a waypoint: with no token it starts the
+    // handoff, with one it trades it for a session. A login screen during either
+    // reads as "you are logged out". Only a failed handoff (?error=) shows the
+    // mPass button, so a persistent failure cannot loop; anything else that needs
+    // the user (session limit, MFA) falls back to the page below.
+    isSSOHandoffInProgress() {
+      if (!this.isSSOMode || this.authError) return false;
+      if (!this.ssoAuthToken) return true;
+      return (
+        !this.sessionsLimitReached &&
+        !this.mfaRequired &&
+        !this.loginApi.hasErrored
+      );
+    },
   },
   created() {
     if (this.ssoAuthToken) {
       this.submitLogin();
+    } else if (this.isSSOHandoffInProgress) {
+      window.location.assign(SSO_HANDOFF_PATH);
     }
   },
   mounted() {
@@ -218,7 +243,11 @@ export default {
 
           // Reset URL Params if the authentication is invalid
           if (this.email) {
-            window.location = '/app/login';
+            // Under SSO a bare /app/login would restart the handoff; the error
+            // marker stops a persistent failure from looping.
+            window.location = this.isSSOMode
+              ? '/app/login?error=sso_failed'
+              : '/app/login';
           }
           this.loginApi.hasErrored = true;
           this.showAlertMessage(
@@ -296,6 +325,13 @@ export default {
 
 <template>
   <main
+    v-if="isSSOHandoffInProgress"
+    class="flex items-center justify-center w-full min-h-screen bg-n-brand/5 dark:bg-n-background"
+  >
+    <Spinner color-scheme="primary" size="" />
+  </main>
+  <main
+    v-else
     class="flex flex-col w-full min-h-screen py-20 bg-n-brand/5 dark:bg-n-background sm:px-6 lg:px-8"
   >
     <section class="max-w-5xl mx-auto">
@@ -349,7 +385,7 @@ export default {
         'animate-wiggle': loginApi.hasErrored,
       }"
     >
-      <div v-if="!email">
+      <div v-if="!email && !isSSOMode">
         <div class="flex flex-col gap-4">
           <GoogleOAuthButton v-if="showGoogleOAuth" />
           <div v-if="showSamlLogin" class="text-center">
@@ -418,6 +454,29 @@ export default {
             :is-loading="loginApi.showLoading"
           />
         </form>
+      </div>
+      <!--
+        audit row 15 — under SSO there is no local credential to collect, so the
+        form is not merely hidden: the server 404s POST /auth/sign_in without an
+        sso_auth_token (DeviseOverrides::SessionsController). This branch is the
+        way back in when the handoff failed and bounced here with ?error=, which
+        is also the one case DashboardController does not re-enter automatically.
+      -->
+      <div v-else-if="!email" class="flex flex-col gap-4 text-center">
+        <p class="text-sm text-n-slate-11">
+          {{ $t('LOGIN.MPASS.SUBTITLE') }}
+        </p>
+        <!-- A full navigation, never a router-link: the handoff is a Rails route. -->
+        <a
+          :href="ssoHandoffPath"
+          data-testid="mpass_login_link"
+          class="inline-flex items-center justify-center w-full px-4 py-3 rounded-md shadow-sm bg-n-background dark:bg-n-solid-3 ring-1 ring-inset ring-n-container hover:bg-n-alpha-2 dark:hover:bg-n-alpha-2"
+        >
+          <Icon icon="i-lucide-lock-keyhole" class="size-5 text-n-slate-11" />
+          <span class="ml-2 text-base font-medium text-n-slate-12">
+            {{ $t('LOGIN.MPASS.LABEL') }}
+          </span>
+        </a>
       </div>
       <div v-else class="flex items-center justify-center">
         <Spinner color-scheme="primary" size="" />

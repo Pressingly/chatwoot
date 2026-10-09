@@ -6,6 +6,7 @@ import {
   clearCookiesOnLogout,
   deleteIndexedDBOnLogout,
 } from '../store/utils/api';
+import { isSSOMode } from 'shared/helpers/ssoMode';
 
 export default {
   validityCheck() {
@@ -13,6 +14,40 @@ export default {
     return axios.get(urlData.url);
   },
   logout() {
+    // audit row 14 — under SSO, per-app logout is NAVIGATION-ONLY.
+    //
+    // DELETE /auth/sign_out is skipped only in SSO mode: it cleared the Rails-side
+    // token, but the next request would immediately re-establish a session from
+    // X-Auth-Request-Email, so the user-visible result was identical while the
+    // request added a failure mode. Real sign-out is the portal's "logout all",
+    // which clears the shared _oauth2_proxy cookie.
+    //
+    // Stock Chatwoot still calls it: without SSO the devise token is the whole
+    // session, and skipping the request would leave it valid for its full lifespan
+    // after the user believes they have logged out.
+    //
+    // The portal URL is deployer-supplied: LOGOUT_REDIRECT_URL, passed to
+    // clearCookiesOnLogout(), not LOGOUT_REDIRECT_LINK (DB-only, and it also drives
+    // the 401 re-auth path). Never derive the host by rewriting the hostname, and
+    // never point at /oauth2/sign_out.
+    //
+    // Missing or not an absolute http(s) URL: log and do nothing. Falling back to
+    // '/' would re-enter the handoff and sign the user straight back in, so Sign
+    // out would look broken instead of failing loudly.
+    if (isSSOMode()) {
+      const portalUrl = window.globalConfig?.LOGOUT_REDIRECT_URL;
+      if (!/^https?:\/\/[^/]/i.test(portalUrl || '')) {
+        // eslint-disable-next-line no-console
+        console.error(
+          'SSO Sign out: LOGOUT_REDIRECT_URL is missing or not an absolute http(s) URL.'
+        );
+        return Promise.resolve();
+      }
+      deleteIndexedDBOnLogout();
+      clearCookiesOnLogout(portalUrl);
+      return Promise.resolve();
+    }
+
     const urlData = endPoints('logout');
     const fetchPromise = new Promise((resolve, reject) => {
       axios

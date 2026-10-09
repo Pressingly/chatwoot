@@ -3,6 +3,9 @@ class Api::V2::AccountsController < Api::BaseController
 
   skip_before_action :authenticate_user!, :set_current_user, :handle_with_exception,
                      only: [:create], raise: false
+  include MpassLocalAuthGuard
+  # Signup creates a local-password user and returns a session (send_auth_headers).
+  before_action :reject_local_auth_under_sso, only: [:create]
   before_action :check_signup_enabled, only: [:create]
   before_action :validate_captcha, only: [:create]
   before_action :fetch_account, except: [:create]

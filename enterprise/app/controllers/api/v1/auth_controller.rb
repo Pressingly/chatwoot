@@ -1,5 +1,9 @@
 class Api::V1::AuthController < Api::BaseController
+  include MpassLocalAuthGuard
   skip_before_action :authenticate_user!, only: [:saml_login]
+  # SAML login is a second identity path under SSO (security.md G10). prepend_ so
+  # it runs before find_user_and_account reveals whether the account uses SAML.
+  prepend_before_action :reject_local_auth_under_sso, only: [:saml_login]
   before_action :find_user_and_account, only: [:saml_login]
 
   def saml_login
