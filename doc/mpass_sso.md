@@ -37,6 +37,7 @@ browser ──> traefik ──(ForwardAuth)──> oauth2-proxy ──> mpass-au
 | `CHATWOOT_SMB_DEFAULT_ACCOUNT_ID` | Optional. The account every SSO user joins as `agent`. Unset: the oldest active account. Set to an id that doesn't exist: nobody is joined |
 | `ENABLE_ACCOUNT_SIGNUP` | Keep `false`. `POST /api/v1/accounts` is 404 under SSO anyway |
 | `GOOGLE_OAUTH_CLIENT_ID` / `_SECRET` | Leave unset. The callbacks are 404 under SSO; unset is defence in depth |
+| `TRUSTED_PROXY_CIDRS` | Optional, comma-separated CIDRs added to the trusted proxies (`config/initializers/00_trusted_proxies.rb`), so `request.ip` and Rack::Attack resolve the real client behind a proxy chain outside the private ranges (GKE: pod CIDR, GFE ranges, gateway VIP). Also stops Rack honouring a client-supplied `Forwarded` header. Unset: upstream behaviour |
 
 ## Why trusting the headers is safe
 
