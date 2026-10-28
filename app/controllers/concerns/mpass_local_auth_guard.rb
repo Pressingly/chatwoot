@@ -31,7 +31,7 @@ module MpassLocalAuthGuard
   # outright: the ForwardAuth handoff re-enters POST /auth/sign_in carrying an
   # sso_auth_token, so a blanket gate there would break login itself. Everything
   # else that reaches it — a password, a header-supplied credential pair, an MFA
-  # verification — is a second identity path Moneta does not control. Every account
+  # verification or enforced-MFA setup — is a second identity path Moneta does not control. Every account
   # created before the integration still has a working local password, and
   # MpassUserBuilder gives provisioned users a real (random) one too.
   #
@@ -42,7 +42,7 @@ module MpassLocalAuthGuard
   def reject_local_login_under_sso
     return unless Mpass::ProxyIdentity.sso_mode?
 
-    handoff = @resource.present? && params[:password].blank? && params[:mfa_token].blank?
+    handoff = @resource.present? && params[:password].blank? && params[:mfa_token].blank? && params[:mfa_setup_token].blank?
     head :not_found unless handoff
   end
 end

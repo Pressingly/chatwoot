@@ -78,6 +78,19 @@ RSpec.describe 'local-credential endpoints under SSO', type: :request do
       expect(response).to have_http_status(:not_found)
     end
 
+    it 'refuses an enforced-MFA setup verification' do
+      post '/auth/sign_in', params: { mfa_setup_token: 'some-token', otp_code: '123456' }
+      expect(response).to have_http_status(:not_found)
+    end
+
+    # create consumes mfa_setup_token before the handoff branch, so a valid handoff
+    # token must not carry one through the gate.
+    it 'refuses a valid handoff token sent together with an MFA setup token' do
+      token = user.generate_sso_auth_token
+      post '/auth/sign_in', params: { email: user.email, sso_auth_token: token, mfa_setup_token: 'some-token', otp_code: '123456' }
+      expect(response).to have_http_status(:not_found)
+    end
+
     it 'refuses a valid handoff token sent together with a password' do
       token = user.generate_sso_auth_token
       post '/auth/sign_in', params: { email: user.email, password: 'Password1!', sso_auth_token: token }
