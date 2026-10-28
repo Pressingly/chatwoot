@@ -35,3 +35,6 @@ ignore:
   # reassess if the supported Ruby runtime changes.
   - CVE-2026-67987
   - CVE-2026-67989
+  # datadog is loaded only when DD_TRACE_AGENT_URL is set (config/initializers/datadog.rb),
+  # which this fork's deployments never set. Remove once upstream locks datadog >= 2.45.0.
+  - GHSA-p7cx-x3jr-jj6w
