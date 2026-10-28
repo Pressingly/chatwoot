@@ -1,5 +1,6 @@
 class Api::V2::AccountsController < Api::BaseController
   include AuthHelper
+  include MfaEnforcementGuard
 
   skip_before_action :authenticate_user!, :set_current_user, :handle_with_exception,
                      only: [:create], raise: false
@@ -8,7 +9,9 @@ class Api::V2::AccountsController < Api::BaseController
   before_action :reject_local_auth_under_sso, only: [:create]
   before_action :check_signup_enabled, only: [:create]
   before_action :validate_captcha, only: [:create]
+  before_action :check_user_mfa_enforcement, if: :authenticate_by_access_token?, only: [:create]
   before_action :fetch_account, except: [:create]
+  before_action :check_account_mfa_enforcement, if: :authenticate_by_access_token?, except: [:create]
   before_action :check_authorization, except: [:create]
 
   rescue_from CustomExceptions::Account::InvalidEmail,
