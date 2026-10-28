@@ -121,6 +121,13 @@ class DashboardController < ActionController::Base
       AZURE_APP_ID: GlobalConfigService.load('AZURE_APP_ID', ''),
       GIT_SHA: GIT_HASH,
       ALLOWED_LOGIN_METHODS: allowed_login_methods,
+      ACTIVE_PLATFORM_BANNERS: active_platform_banners,
+      ACTIVE_FEATURE_ANNOUNCEMENTS: active_feature_announcements
+    }.merge(mpass_app_config)
+  end
+
+  def mpass_app_config
+    {
       # Read from ENV on every request, never via GlobalConfig: GlobalConfigService
       # persists ENV into InstallationConfig on first read, which would make
       # AUTH_TYPE sticky in the database and survive an env change. audit rows 5, 8
@@ -128,9 +135,7 @@ class DashboardController < ActionController::Base
       # SSO Sign out target (logout-flow spec), the bundle's LOGOUT_REDIRECT_URL. Not
       # upstream's LOGOUT_REDIRECT_LINK: that one is DB-only and also drives the 401
       # re-auth path, which must stay inside the app.
-      LOGOUT_REDIRECT_URL: ENV.fetch('LOGOUT_REDIRECT_URL', ''),
-      ACTIVE_PLATFORM_BANNERS: active_platform_banners,
-      ACTIVE_FEATURE_ANNOUNCEMENTS: active_feature_announcements
+      LOGOUT_REDIRECT_URL: ENV.fetch('LOGOUT_REDIRECT_URL', '')
     }
   end
 
