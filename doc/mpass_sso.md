@@ -93,14 +93,16 @@ visitors using the chat widget, and customers opening help-center or survey link
 | `PathPrefix(/hc/)` + `Query(show_plain_layout, true)` | Help-center articles the widget opens in an iframe on customer sites (`ArticleContainer.vue`). Chatwoot drops `X-Frame-Options` only for this layout (`Public::Api::V1::Portals::BaseController#allow_iframe_requests`), so this router uses the widget's header set without `security-headers` and Traefik does not put it back. Its priority sits above the `/hc/` router; every other `/hc/` page keeps `SAMEORIGIN` |
 | `PathPrefix(/survey/responses/)` | CSAT page emailed to customers; a page shell whose data comes from `/public/api/` |
 
-**Channel inbound callbacks: not bypassed by default.** A provider cannot hold an mPass
-session, so a channel's inbound path must be bypassed for that channel to work. Bypass only
-the channels a deployment enables, each with an exact `Path`/`PathRegexp` and method, and
-only where Chatwoot verifies the caller:
+**Channel inbound callbacks: not bypassed by default, except WhatsApp in the bundle.** A
+provider cannot hold an mPass session, so a channel's inbound path must be bypassed for that
+channel to work. Bypass only the channels a deployment enables, each with an exact
+`Path`/`PathRegexp` and method, and only where Chatwoot verifies the caller. The bundle
+bypasses WhatsApp for every deployment on its own rate-limited router
+(`PathRegexp(^/webhooks/whatsapp/[^/]+$)`, `GET`/`POST`); the devkit bypasses none.
 
 | Route | Caller verification in Chatwoot | Bypass when enabled? |
 |---|---|---|
-| `POST /webhooks/whatsapp/:phone_number`, `GET` (verify) | Meta `X-Hub-Signature-256`, always required | Yes |
+| `POST /webhooks/whatsapp/:phone_number`, `GET` (verify) | `GET` checks the channel's `webhook_verify_token`. `POST` checks Meta `X-Hub-Signature-256` only for a `whatsapp_cloud` channel that has an app secret in its provider config or came from embedded signup; 360dialog and manual Cloud channels without one accept unsigned requests, even with `WHATSAPP_APP_SECRET` set | Yes, bundled. Give every manual Cloud channel an app secret |
 | `POST /webhooks/instagram`, `GET` (verify) | Meta signature, always required | Yes |
 | `/bot` (Facebook Messenger) | Messenger signature against the page's app secret or `FB_APP_SECRET` | Yes, with `FB_APP_SECRET` set |
 | `POST /webhooks/tiktok` | `Tiktok-Signature` HMAC | Yes |
