@@ -116,6 +116,9 @@ bypasses WhatsApp for every deployment on its own rate-limited router
 | `POST /rails/action_mailbox/:service/inbound_emails` (email inboxes) | Action Mailbox ingress: HTTP basic auth with `RAILS_INBOUND_EMAIL_PASSWORD` (relay), or the provider's signing key (Mailgun, Mandrill, …) | Yes for the configured ingress only, with its password or key set |
 | `/enterprise/webhooks/stripe`, `/enterprise/webhooks/firecrawl` (EE) | Provider signatures | Only if the feature is used; exact `Path` |
 
+The inbox settings have no app-secret field. Set it with `PATCH /api/v1/accounts/:account_id/inboxes/:id`,
+sending the channel's full existing `provider_config` plus `app_secret`: a partial config regenerates the verify token.
+
 Never bypass a `/webhooks` prefix: it would also expose the channels that verify nothing.
 
 **Still gated, known breakage:** `/rails/active_storage/*`, so agent avatars and
