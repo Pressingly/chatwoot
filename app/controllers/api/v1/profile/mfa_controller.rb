@@ -2,7 +2,9 @@ class Api::V1::Profile::MfaController < Api::BaseController
   include MpassLocalAuthGuard
   # Under SSO the credential is mPass's; a Chatwoot second factor is a lockout path.
   before_action :reject_local_auth_under_sso, except: [:show]
+  before_action :ensure_interactive_session
   before_action :check_mfa_feature_available
+  before_action :check_mfa_not_enforced, only: [:destroy]
   before_action :check_mfa_enabled, only: [:destroy, :backup_codes]
   before_action :check_mfa_disabled, only: [:create, :verify]
   before_action :validate_password, only: [:destroy]
@@ -28,6 +30,14 @@ class Api::V1::Profile::MfaController < Api::BaseController
 
   private
 
+  # MFA credentials must be managed from an interactive session, never with an
+  # api_access_token, so a stolen token cannot enrol itself as the second factor.
+  def ensure_interactive_session
+    return unless authenticate_by_access_token?
+
+    render json: { error: I18n.t('errors.mfa.interactive_session_required') }, status: :forbidden
+  end
+
   def mfa_service
     @mfa_service ||= Mfa::ManagementService.new(user: current_user)
   end
@@ -46,6 +56,14 @@ class Api::V1::Profile::MfaController < Api::BaseController
 
   def check_mfa_disabled
     render_could_not_create_error(I18n.t('errors.mfa.already_enabled')) if current_user.mfa_enabled?
+  end
+
+  def check_mfa_not_enforced
+    return unless current_user.mfa_enforced?
+
+    render json: {
+      error: I18n.t('errors.mfa.enforced_cannot_disable')
+    }, status: :forbidden
   end
 
   def validate_otp
