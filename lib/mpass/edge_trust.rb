@@ -41,8 +41,8 @@ class Mpass::EdgeTrust
                     .find { |value| value.present? && value.exclude?('@') } || '-'
   end
 
-  def self.sanitised(rack_env, trusted:)
-    rack_env.reject { |key, _| key == EDGE_SECRET_HEADER || (!trusted && identity_header?(key)) }
+  def self.stripped_keys(rack_env, trusted:)
+    rack_env.keys.select { |key| key == EDGE_SECRET_HEADER || (!trusted && identity_header?(key)) }
   end
 
   def initialize(app, logger: Rails.logger)
@@ -53,10 +53,17 @@ class Mpass::EdgeTrust
   def call(rack_env)
     trusted = self.class.from_edge?(rack_env, self.class.configured_secret)
     warn_untrusted(rack_env) if !trusted && self.class.carries_identity?(rack_env)
-    @app.call(self.class.sanitised(rack_env, trusted: trusted))
+    strip!(rack_env, trusted)
+    @app.call(rack_env)
   end
 
   private
+
+  # The env is edited in place: Rack callers (Rails integration sessions among
+  # them) read session, flash and method overrides back from the same hash.
+  def strip!(rack_env, trusted)
+    self.class.stripped_keys(rack_env, trusted: trusted).each { |key| rack_env.delete(key) }
+  end
 
   def warn_untrusted(rack_env)
     @logger.warn(

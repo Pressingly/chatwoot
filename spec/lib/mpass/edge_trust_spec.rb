@@ -50,10 +50,14 @@ RSpec.describe Mpass::EdgeTrust do
     end
   end
 
-  it 'does not mutate the incoming env and stays quiet without identity headers' do
-    env = { 'PATH_INFO' => '/health', 'HTTP_X_MPASS_EDGE_SECRET' => 'forged' }
-    call(env)
-    expect(env).to have_key('HTTP_X_MPASS_EDGE_SECRET')
+  it 'strips the incoming env in place so callers see what downstream middleware stores in it' do
+    env = identity.merge('HTTP_X_MPASS_EDGE_SECRET' => 'forged')
+    expect(call(env)).to equal(env)
+    expect(env.keys.grep(/\AHTTP_X_(AUTH_REQUEST|MPASS_EDGE_SECRET)/)).to be_empty
+  end
+
+  it 'stays quiet without identity headers' do
+    call({ 'PATH_INFO' => '/health', 'HTTP_X_MPASS_EDGE_SECRET' => 'forged' })
     expect(logger).not_to have_received(:warn)
   end
 end
