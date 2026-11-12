@@ -142,6 +142,15 @@ RSpec.describe 'Sso::ProxyLoginController', type: :request do
       expect(Rails.logger).not_to have_received(:warn).with(/alice@example\.com/)
     end
 
+    it 'refuses everyone with reason placeholder_config while SMB_CORPORATE_ID is a CHANGE_ME_ placeholder' do
+      allow(Rails.logger).to receive(:warn)
+      with_modified_env(**env, SMB_CORPORATE_ID: 'CHANGE_ME_SMB_CORPORATE_ID') do
+        expect { handoff_with_token(mpass_token(acme)) }.not_to change(User, :count)
+        expect(response).to have_http_status(:forbidden)
+      end
+      expect(Rails.logger).to have_received(:warn).with(/reason=placeholder_config/)
+    end
+
     it 'refuses an expired token at the handoff' do
       with_modified_env(**env) do
         handoff_with_token(mpass_token(acme.merge('exp' => Time.now.to_i - 600)))

@@ -293,6 +293,15 @@ RSpec.describe 'mPass session reconciliation', type: :request do
       end
     end
 
+    it 'flushes the session while SMB_CORPORATE_ID is a CHANGE_ME_ placeholder' do
+      with_modified_env(**corp_env, SMB_CORPORATE_ID: 'CHANGE_ME_SMB_CORPORATE_ID') do
+        get "/api/v1/accounts/#{account.id}/conversations",
+            headers: mpass_edge_headers(token_a).merge('X-Auth-Request-Email' => 'a@askii.ai', 'X-Auth-Request-Access-Token' => acme)
+        expect(response).to have_http_status(:unauthorized)
+        expect(response.headers['X-Mpass-Session-Flushed']).to eq('true')
+      end
+    end
+
     it 'keeps the session on an expired token instead of flushing it' do
       expired = mpass_token('custom:is_corporate' => 'true', 'custom:corporate_id' => 'acme-42', 'exp' => Time.now.to_i - 600)
       with_modified_env(**corp_env) do

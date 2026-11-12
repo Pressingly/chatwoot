@@ -168,7 +168,7 @@ ForwardAuth admits every principal in the Cognito pool. When `SMB_CORPORATE_ID` 
 `Mpass::TokenVerifier` and then requires both `custom:is_corporate == "true"` and
 `custom:corporate_id == SMB_CORPORATE_ID`. Unset, the check is skipped and no JWKS is fetched.
 
-`SMB_CORPORATE_ID` is trimmed, and a `CHANGE_ME_` placeholder counts as unset.
+`SMB_CORPORATE_ID` is trimmed; empty means the gate is off. A `CHANGE_ME_` placeholder keeps the gate on and refuses every login (`reason=placeholder_config`, existing sessions are flushed, and boot logs an error), so a forgotten placeholder fails closed.
 
 Verification: the issuer must be the Cognito issuer or `MPASS_TOKEN_ISSUER_URL`; RS256 only
 against that issuer's JWKS (cached an hour per issuer, fetched outside the lock with one fetch

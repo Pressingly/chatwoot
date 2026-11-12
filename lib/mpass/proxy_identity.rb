@@ -15,7 +15,7 @@ module Mpass::ProxyIdentity
 
   UUID_SHAPE = /\A\h{8}-\h{4}-\h{4}-\h{4}-\h{12}\z/
   NUMERIC = /\A\d+\z/
-  CLAIM_REJECTIONS = %w[not_corporate wrong_organization].freeze
+  CLAIM_REJECTIONS = %w[not_corporate wrong_organization placeholder_config].freeze
 
   module_function
 
@@ -70,6 +70,7 @@ module Mpass::ProxyIdentity
   def corporate_rejection(request, verifier: Mpass::TokenVerifier.from_env)
     expected = corporate_id
     return nil if expected.blank?
+    return 'placeholder_config' if corporate_id_placeholder?
 
     token = request.get_header(ACCESS_TOKEN_HEADER).to_s
     return 'missing_token' if token.blank?
@@ -102,8 +103,14 @@ module Mpass::ProxyIdentity
     )
   end
 
+  # Unlike the other settings, a CHANGE_ME_ value is not "unset": that would turn
+  # the gate off and admit the whole pool. It keeps the gate on and refuses everyone.
   def corporate_id
-    Mpass::TokenVerifier.configured(ENV.fetch('SMB_CORPORATE_ID', nil))
+    ENV.fetch('SMB_CORPORATE_ID', nil).to_s.strip
+  end
+
+  def corporate_id_placeholder?
+    corporate_id.start_with?(Mpass::TokenVerifier::PLACEHOLDER_PREFIX)
   end
 
   def corporate_claims_rejection(claims, expected)

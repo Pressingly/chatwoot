@@ -116,11 +116,19 @@ RSpec.describe Mpass::ProxyIdentity do
   end
 
   describe '.corporate_id' do
-    it 'treats blank and CHANGE_ME_ placeholders as unset, so the gate stays off' do
-      ['  ', 'CHANGE_ME_SMB_CORPORATE_ID'].each do |value|
-        with_modified_env(SMB_CORPORATE_ID: value) do
-          expect(described_class.corporate_rejection(request_with({}))).to be_nil
-        end
+    it 'treats a blank value as unset, so the gate stays off' do
+      with_modified_env(SMB_CORPORATE_ID: '  ') do
+        expect(described_class.corporate_rejection(request_with({}))).to be_nil
+      end
+    end
+
+    it 'keeps the gate on for a CHANGE_ME_ placeholder and refuses even a valid token' do
+      stub_mpass_jwks
+      token = mpass_token('custom:is_corporate' => 'true', 'custom:corporate_id' => 'CHANGE_ME_SMB_CORPORATE_ID')
+      with_modified_env(SMB_CORPORATE_ID: ' CHANGE_ME_SMB_CORPORATE_ID ', **mpass_verifier_env) do
+        request = request_with('HTTP_X_AUTH_REQUEST_ACCESS_TOKEN' => token)
+        expect(described_class.corporate_rejection(request)).to eq('placeholder_config')
+        expect(described_class.corporate_mismatch?(request)).to be true
       end
     end
 
