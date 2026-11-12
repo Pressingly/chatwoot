@@ -8,7 +8,8 @@ Run after every deploy, and after any change to the SSO code. `HOST` is Chatwoot
 `PORTAL` the platform portal. Use a private window, and keep
 `https://whoami.<platform domain>` open to see the raw headers the edge sends.
 
-Setup: `AUTH_TYPE=SSO`, `DEFAULT_EMAIL_DOMAIN` set, `LOGOUT_REDIRECT_URL=https://PORTAL`,
+Setup: `AUTH_TYPE=SSO`, `DEFAULT_EMAIL_DOMAIN` set, `MPASS_EDGE_SECRET` set (at least 32 characters, the
+same value the `chatwoot-edge-secret` Traefik middleware injects), `LOGOUT_REDIRECT_URL=https://PORTAL`,
 bootstrap done (one account, onboarding flag cleared; see `doc/mpass_sso.md` §Operations).
 
 ## With a browser
@@ -46,8 +47,23 @@ bootstrap done (one account, onboarding flag cleared; see `doc/mpass_sso.md` §O
 | # | Change, then `docker compose up -d` the web service | Pass |
 |---|---|---|
 | 19 | Unset `DEFAULT_EMAIL_DOMAIN` (the devkit sends a bare mPass id) and open `HOST` | Login refused (`/app/login?error=sso_failed`); no user row with a made-up address |
-| 20 | Set `SMB_CORPORATE_ID` to a value your account doesn't have (on the app only, not in the edge's `.env`) | `403` at `/auth/sso/proxy-login`, no new user row. An already-open dashboard is flushed on its next request |
+| 20 | Set `SMB_CORPORATE_ID` to a value your account doesn't have (on the app only, not in the edge's `.env`), with `MPASS_COGNITO_ISSUER_URL` and `MPASS_OIDC_CLIENT_ID` set | `403` at `/auth/sso/proxy-login`, no new user row, and `reason=wrong_organization` (or `not_corporate`) in the web log: the token's signature, issuer and audience passed. An already-open dashboard is flushed on its next request |
 | 21 | Set `SMB_CORPORATE_ID` to your account's corporate id | Login works |
 | 22 | Unset `LOGOUT_REDIRECT_URL`, then Sign out. The devkit compose always sets it, so override it to empty for the `chatwoot` service (e.g. `LOGOUT_REDIRECT_URL: ''` in an extra `-f` override file); empty counts as unset | Nothing happens and the browser console logs an error; you are not signed back in through `/` |
+
+| 23 | Set `MPASS_EDGE_SECRET` shorter than 32 characters | Boot logs an error naming `MPASS_EDGE_SECRET`; opening `HOST` ends at `/app/login?error=sso_failed` |
+
+## Edge trust (from a container on the backend network)
+
+Chatwoot's port is reachable from every container on the backend network; only requests carrying the edge
+secret may assert an identity. Run from a sibling container, e.g.
+`docker run --rm --network <backend network> curlimages/curl ...`, with
+`-H 'Host: HOST' -H 'X-Forwarded-Proto: https'`.
+
+| # | Request to `http://chatwoot:3000` | Pass |
+|---|---|---|
+| 24 | `GET /auth/sso/proxy-login` with `X-Auth-Request-Email: someone@example.com` and no `X-Mpass-Edge-Secret`, then again with a wrong one | `302` to `/app/login?error=sso_failed`, no user row; the web log shows `mPass identity headers ignored ... mpass_id=... path=... remote_addr=...` with no email in it |
+| 25 | `GET /api/v1/accounts/<id>/conversations` with `api_access_token` and a forged `X-Auth-Request-Email` | `200`; the token is unaffected |
+| 26 | With `SMB_CORPORATE_ID` set and the right edge secret: an `alg: none` or HS256 token carrying the right corporate claims in `X-Auth-Request-Access-Token` | `403`, `reason=wrong_algorithm` in the log |
 
 Put every setting back afterwards.
