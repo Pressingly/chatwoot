@@ -14,7 +14,7 @@ Rails.application.config.after_initialize do
     )
   end
 
-  if ENV['SMB_CORPORATE_ID'].present? && !Mpass::TokenVerifier.from_env.configured?
+  if Mpass::ProxyIdentity.corporate_id.present? && !Mpass::TokenVerifier.from_env.configured?
     Rails.logger.error(
       'SMB_CORPORATE_ID is set but no token issuer or client id is configured ' \
       '(MPASS_COGNITO_ISSUER_URL or COGNITO_AWS_REGION + COGNITO_USER_POOL_ID, MPASS_OIDC_CLIENT_ID): every mPass login will be refused'

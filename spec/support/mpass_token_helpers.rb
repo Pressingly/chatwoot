@@ -32,5 +32,8 @@ end
 
 RSpec.configure do |config|
   config.include MpassTokenHelpers
-  config.before { Mpass::JwksCache.shared.reset! }
+  config.before do
+    Mpass::JwksCache.shared.reset!
+    Mpass::VerifiedTokenCache.shared.reset!
+  end
 end

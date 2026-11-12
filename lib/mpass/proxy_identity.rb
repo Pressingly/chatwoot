@@ -15,6 +15,7 @@ module Mpass::ProxyIdentity
 
   UUID_SHAPE = /\A\h{8}-\h{4}-\h{4}-\h{4}-\h{12}\z/
   NUMERIC = /\A\d+\z/
+  CLAIM_REJECTIONS = %w[not_corporate wrong_organization].freeze
 
   module_function
 
@@ -67,8 +68,8 @@ module Mpass::ProxyIdentity
   # check is skipped and no token is read. Returns why the caller is refused, or
   # nil when it is admitted; a missing or unverifiable token fails closed.
   def corporate_rejection(request, verifier: Mpass::TokenVerifier.from_env)
-    expected = ENV.fetch('SMB_CORPORATE_ID', nil).presence
-    return nil if expected.nil?
+    expected = corporate_id
+    return nil if expected.blank?
 
     token = request.get_header(ACCESS_TOKEN_HEADER).to_s
     return 'missing_token' if token.blank?
@@ -78,8 +79,23 @@ module Mpass::ProxyIdentity
     e.reason
   end
 
-  def corporate_claims_ok?(request)
-    corporate_rejection(request).nil?
+  # The per-request re-check on an existing session. Only a verified token whose
+  # claims name another tenant ends the session; a token that cannot be verified
+  # right now (expired between refreshes, JWKS unreachable) leaves it alone, so an
+  # issuer outage cannot log everyone out. The handoff stays strict.
+  def corporate_mismatch?(request)
+    reason = corporate_rejection(request)
+    return false if reason.nil?
+    return true if CLAIM_REJECTIONS.include?(reason)
+
+    Rails.logger.warn(
+      "mPass corporate re-check skipped: reason=#{reason} mpass_id=#{Mpass::EdgeTrust.mpass_id_for_logs(request.env)} path=#{request.path}"
+    )
+    false
+  end
+
+  def corporate_id
+    Mpass::TokenVerifier.configured(ENV.fetch('SMB_CORPORATE_ID', nil))
   end
 
   def corporate_claims_rejection(claims, expected)

@@ -293,6 +293,25 @@ RSpec.describe 'mPass session reconciliation', type: :request do
       end
     end
 
+    it 'keeps the session on an expired token instead of flushing it' do
+      expired = mpass_token('custom:is_corporate' => 'true', 'custom:corporate_id' => 'acme-42', 'exp' => Time.now.to_i - 600)
+      with_modified_env(**corp_env) do
+        get "/api/v1/accounts/#{account.id}/conversations",
+            headers: mpass_edge_headers(token_a).merge('X-Auth-Request-Email' => 'a@askii.ai', 'X-Auth-Request-Access-Token' => expired)
+        expect(response).to have_http_status(:success)
+        expect(user_a.reload.tokens.keys).to include(token_a['client'])
+      end
+    end
+
+    it 'keeps the session when the JWKS is unreachable, even for a token naming another tenant' do
+      stub_request(:get, "#{MpassTokenHelpers::MPASS_ISSUER}/.well-known/jwks.json").to_timeout
+      with_modified_env(**corp_env) do
+        get "/api/v1/accounts/#{account.id}/conversations",
+            headers: mpass_edge_headers(token_a).merge('X-Auth-Request-Email' => 'a@askii.ai', 'X-Auth-Request-Access-Token' => globex)
+        expect(response).to have_http_status(:success)
+      end
+    end
+
     it 'leaves a matching corporate principal alone' do
       with_modified_env(**corp_env) do
         get "/api/v1/accounts/#{account.id}/conversations",

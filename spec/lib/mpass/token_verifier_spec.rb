@@ -3,9 +3,12 @@ require 'rails_helper'
 RSpec.describe Mpass::TokenVerifier do
   let(:issuer) { MpassTokenHelpers::MPASS_ISSUER }
   let(:proxy_issuer) { 'https://mpass-auth.example.com' }
-  let(:verifier) do
+  let(:claims_cache) { Mpass::VerifiedTokenCache.new }
+  let(:verifier) { build_verifier(Mpass::JwksCache.new) }
+
+  def build_verifier(jwks_cache)
     described_class.new(cognito_issuer: issuer, extra_issuers: [proxy_issuer], client_id: MpassTokenHelpers::MPASS_CLIENT_ID,
-                        jwks_cache: Mpass::JwksCache.new)
+                        jwks_cache: jwks_cache, claims_cache: claims_cache)
   end
 
   def reason_for(token)
@@ -75,6 +78,20 @@ RSpec.describe Mpass::TokenVerifier do
   it 'reports jwks_unavailable when the JWKS body is not a key set' do
     stub_request(:get, "#{issuer}/.well-known/jwks.json").to_return(status: 200, body: '{"nope":1}')
     expect(reason_for(mpass_token)).to eq('jwks_unavailable')
+  end
+
+  it 'memoises a verified token, so a later JWKS outage does not affect it' do
+    token = mpass_token
+    verifier.verify(token)
+    stub_request(:get, "#{issuer}/.well-known/jwks.json").to_return(status: 503)
+    expect(build_verifier(Mpass::JwksCache.new).verify(token)).to include('iss' => issuer)
+    expect { build_verifier(Mpass::JwksCache.new).verify(mpass_token('sub' => 'another')) }
+      .to raise_error(described_class::InvalidToken, 'jwks_unavailable')
+  end
+
+  it 'never memoises a refusal' do
+    expired = mpass_token('exp' => Time.now.to_i - 120)
+    2.times { expect(reason_for(expired)).to eq('expired') }
   end
 
   describe '.from_env' do

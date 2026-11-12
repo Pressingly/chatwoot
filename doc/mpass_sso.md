@@ -168,9 +168,13 @@ ForwardAuth admits every principal in the Cognito pool. When `SMB_CORPORATE_ID` 
 `Mpass::TokenVerifier` and then requires both `custom:is_corporate == "true"` and
 `custom:corporate_id == SMB_CORPORATE_ID`. Unset, the check is skipped and no JWKS is fetched.
 
+`SMB_CORPORATE_ID` is trimmed, and a `CHANGE_ME_` placeholder counts as unset.
+
 Verification: the issuer must be the Cognito issuer or `MPASS_TOKEN_ISSUER_URL`; RS256 only
-against that issuer's JWKS (cached an hour per issuer, 2s fetch timeout, 30s backoff after
-a failed fetch); `exp`, `iat`, `iss` and `token_use` required, 60s clock leeway; an access
+against that issuer's JWKS (cached an hour per issuer, fetched outside the lock with one fetch
+in flight per issuer, 2s timeout, 30s backoff after a failure; during a failure the last good
+set is served for up to 24 hours with a warning, and a key that fails to import is skipped
+and logged by `kid`); `exp`, `iat`, `iss` and `token_use` required, 60s clock leeway; an access
 token's `client_id` or an id_token's `aud` must be `MPASS_OIDC_CLIENT_ID`. Any failure is a
 refusal with a reason code (`missing_token`, `malformed`, `untrusted_issuer`,
 `bad_signature`, `expired`, `wrong_algorithm`, `wrong_audience`, `unknown_signing_key`,
@@ -178,10 +182,12 @@ refusal with a reason code (`missing_token`, `malformed`, `untrusted_issuer`,
 
 - **Handoff:** `Sso::ProxyLoginController` answers `403` before the user builder runs, so
   a refused principal leaves no user row, and it clears the SPA cookie.
-- **Every request after it:** a session whose principal now fails the check is treated as
-  a mismatch and flushed on both reconciliation paths (below), and the handoff then refuses
-  it. So a revoked corporate membership is enforced on the next request, not only at the
-  next login.
+- **Every request after it:** a session whose verified token names another tenant
+  (`not_corporate`, `wrong_organization`) is treated as a mismatch and flushed on both
+  reconciliation paths (below), and the handoff then refuses it. A token that cannot be
+  verified on that request (missing, expired between refreshes, JWKS unreachable) is logged
+  and the session continues, so an issuer outage cannot log everyone out; the handoff stays
+  strict. Verified claims are memoised by token digest until `exp` (at most 1000 entries).
 
 This matters more on Chatwoot than elsewhere: an auto-provisioned `agent` can read
 end-customer conversations.

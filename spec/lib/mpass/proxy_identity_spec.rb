@@ -90,7 +90,6 @@ RSpec.describe Mpass::ProxyIdentity do
 
       it 'admits a matching corporate principal' do
         expect(rejection(acme)).to be_nil
-        expect(described_class.corporate_claims_ok?(request_with('HTTP_X_AUTH_REQUEST_ACCESS_TOKEN' => acme))).to be true
       end
 
       it 'refuses another corporate' do
@@ -113,6 +112,52 @@ RSpec.describe Mpass::ProxyIdentity do
           expect(rejection(bad)).to eq('malformed'), bad
         end
       end
+    end
+  end
+
+  describe '.corporate_id' do
+    it 'treats blank and CHANGE_ME_ placeholders as unset, so the gate stays off' do
+      ['  ', 'CHANGE_ME_SMB_CORPORATE_ID'].each do |value|
+        with_modified_env(SMB_CORPORATE_ID: value) do
+          expect(described_class.corporate_rejection(request_with({}))).to be_nil
+        end
+      end
+    end
+
+    it 'trims the configured id' do
+      with_modified_env(SMB_CORPORATE_ID: '  acme-42 ') { expect(described_class.corporate_id).to eq('acme-42') }
+    end
+  end
+
+  describe '.corporate_mismatch?' do
+    around { |ex| with_modified_env(SMB_CORPORATE_ID: 'acme-42', **mpass_verifier_env) { ex.run } }
+
+    def mismatch?(access_token)
+      headers = access_token ? { 'HTTP_X_AUTH_REQUEST_ACCESS_TOKEN' => access_token } : {}
+      described_class.corporate_mismatch?(request_with(headers))
+    end
+
+    let(:acme_claims) { { 'custom:is_corporate' => 'true', 'custom:corporate_id' => 'acme-42' } }
+
+    before { stub_mpass_jwks }
+
+    it 'is a mismatch only for a verified token naming another tenant' do
+      expect(mismatch?(mpass_token(acme_claims.merge('custom:corporate_id' => 'globex-7')))).to be true
+      expect(mismatch?(mpass_token(acme_claims.merge('custom:is_corporate' => 'false')))).to be true
+      expect(mismatch?(mpass_token(acme_claims))).to be false
+    end
+
+    it 'keeps the session, and logs why, when the token cannot be verified right now' do
+      allow(Rails.logger).to receive(:warn)
+      expect(mismatch?(mpass_token(acme_claims.merge('exp' => Time.now.to_i - 600)))).to be false
+      expect(mismatch?(nil)).to be false
+      expect(Rails.logger).to have_received(:warn).with(/re-check skipped: reason=expired/)
+      expect(Rails.logger).to have_received(:warn).with(/re-check skipped: reason=missing_token/)
+    end
+
+    it 'keeps the session when the JWKS is unreachable' do
+      stub_request(:get, "#{MpassTokenHelpers::MPASS_ISSUER}/.well-known/jwks.json").to_return(status: 503)
+      expect(mismatch?(mpass_token(acme_claims.merge('custom:corporate_id' => 'globex-7')))).to be false
     end
   end
 

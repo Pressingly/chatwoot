@@ -142,6 +142,13 @@ RSpec.describe 'Sso::ProxyLoginController', type: :request do
       expect(Rails.logger).not_to have_received(:warn).with(/alice@example\.com/)
     end
 
+    it 'refuses an expired token at the handoff' do
+      with_modified_env(**env) do
+        handoff_with_token(mpass_token(acme.merge('exp' => Time.now.to_i - 600)))
+        expect(response).to have_http_status(:forbidden)
+      end
+    end
+
     it 'answers 403, not 500, when the JWKS cannot be fetched' do
       stub_request(:get, "#{MpassTokenHelpers::MPASS_ISSUER}/.well-known/jwks.json").to_timeout
       with_modified_env(**env) do

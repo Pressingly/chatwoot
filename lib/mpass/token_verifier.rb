@@ -42,12 +42,13 @@ class Mpass::TokenVerifier
     "https://cognito-idp.#{region}.amazonaws.com/#{pool_id}"
   end
 
-  def self.from_env(env = ENV, jwks_cache: Mpass::JwksCache.shared)
+  def self.from_env(env = ENV, jwks_cache: Mpass::JwksCache.shared, claims_cache: Mpass::VerifiedTokenCache.shared)
     new(
       cognito_issuer: cognito_issuer(env),
       extra_issuers: [without_trailing_slash(configured(env['MPASS_TOKEN_ISSUER_URL']))],
       client_id: configured(env['MPASS_OIDC_CLIENT_ID']),
-      jwks_cache: jwks_cache
+      jwks_cache: jwks_cache,
+      claims_cache: claims_cache
     )
   end
 
@@ -60,11 +61,12 @@ class Mpass::TokenVerifier
     end
   end
 
-  def initialize(cognito_issuer:, client_id:, jwks_cache:, extra_issuers: [])
+  def initialize(cognito_issuer:, client_id:, jwks_cache:, extra_issuers: [], claims_cache: Mpass::VerifiedTokenCache.new)
     @cognito_issuer = cognito_issuer
     @issuers = [cognito_issuer, *extra_issuers].compact_blank.uniq.freeze
     @client_id = client_id
     @jwks_cache = jwks_cache
+    @claims_cache = claims_cache
   end
 
   def configured?
@@ -74,6 +76,13 @@ class Mpass::TokenVerifier
   def verify(token)
     raise InvalidToken, 'verifier_unconfigured' unless configured?
 
+    cache_key = Mpass::VerifiedTokenCache.key_for(token, [*issuers, client_id].join('|'))
+    @claims_cache.fetch(cache_key) || @claims_cache.store(cache_key, verify_uncached(token))
+  end
+
+  private
+
+  def verify_uncached(token)
     issuer = unverified_issuer(token)
     raise InvalidToken, 'untrusted_issuer' unless issuers.include?(issuer)
 
@@ -83,8 +92,6 @@ class Mpass::TokenVerifier
 
     claims
   end
-
-  private
 
   def unverified_issuer(token)
     claims, = JWT.decode(token, nil, false)
