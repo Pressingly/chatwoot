@@ -81,6 +81,44 @@ RSpec.describe Mpass::JwksCache do
     expect { cache.keys_for(issuer) }.to raise_error(described_class::Unavailable)
   end
 
+  it 'releases the in-flight claim when the fetch is interrupted by a non-StandardError exception' do
+    interrupt = Class.new(Exception) # rubocop:disable Lint/InheritException
+    responses << interrupt.new
+    expect { cache.keys_for(issuer) }.to raise_error(interrupt)
+    expect(cache.keys_for(issuer)).to be_a(JWT::JWK::Set)
+    expect(fetches.size).to eq(2)
+  end
+
+  it 'gives up waiting on a fetch that never finishes' do
+    started = Queue.new
+    stuck = lambda { |_url|
+      started << true
+      sleep
+    }
+    stuck_cache = described_class.new(clock: -> { now.first }, fetcher: stuck, logger: logger, wait_timeout: 0.2)
+    fetching = Thread.new { stuck_cache.keys_for(issuer) }
+    started.pop
+    expect { stuck_cache.keys_for(issuer) }.to raise_error(described_class::Unavailable, /still in flight/)
+  ensure
+    fetching&.kill&.join
+  end
+
+  it 'lets the next caller fetch after the fetching thread is killed' do
+    started = Queue.new
+    calls = []
+    killable = lambda { |_url|
+      calls << true
+      if calls.size == 1
+        started << true
+        sleep
+      end
+      jwks_body
+    }
+    killable_cache = described_class.new(clock: -> { now.first }, fetcher: killable, logger: logger)
+    Thread.new { killable_cache.keys_for(issuer) }.tap { started.pop }.kill.join
+    expect(killable_cache.keys_for(issuer)).to be_a(JWT::JWK::Set)
+  end
+
   it 'runs one fetch per issuer at a time, outside the lock' do
     started = Queue.new
     release = Queue.new

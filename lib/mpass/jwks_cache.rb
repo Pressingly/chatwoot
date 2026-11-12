@@ -33,11 +33,16 @@ class Mpass::JwksCache
     response.body
   end
 
-  def initialize(fetcher: self.class.method(:http_get), clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
-                 logger: Rails.logger)
+  def self.monotonic_now
+    Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  end
+
+  def initialize(fetcher: self.class.method(:http_get), clock: self.class.method(:monotonic_now),
+                 logger: Rails.logger, wait_timeout: FETCH_TIMEOUT_SECONDS * 2)
     @fetcher = fetcher
     @clock = clock
     @logger = logger
+    @wait_timeout = wait_timeout
     @mutex = Mutex.new
     @fetch_finished = ConditionVariable.new
     @entries = {}
@@ -75,41 +80,54 @@ class Mpass::JwksCache
   private
 
   def claim_or_wait(issuer, refresh)
+    deadline = self.class.monotonic_now + @wait_timeout
     loop do
-      entry = @entries[issuer]
-      return [:use, entry[:keys]] if entry && fresh?(entry, refresh)
-      return [:use, serve_stale(issuer, entry)] if backing_off?(issuer) || (@in_flight[issuer] && entry)
+      keys = cached_keys(issuer, refresh)
+      return [:use, keys] if keys
 
       unless @in_flight[issuer]
         @in_flight[issuer] = true
         return [:fetch, nil]
       end
-      @fetch_finished.wait(@mutex, FETCH_TIMEOUT_SECONDS * 2)
+      remaining = deadline - self.class.monotonic_now
+      raise Unavailable, "JWKS fetch for #{issuer} is still in flight" unless remaining.positive?
+
+      @fetch_finished.wait(@mutex, remaining)
     end
   end
 
+  def cached_keys(issuer, refresh)
+    entry = @entries[issuer]
+    return entry[:keys] if entry && fresh?(entry, refresh)
+
+    serve_stale(issuer, entry) if backing_off?(issuer) || (@in_flight[issuer] && entry)
+  end
+
+  # The claim is released in ensure: rack-timeout and Thread#kill interrupt with
+  # non-StandardError exceptions, and a claim left behind would stall the issuer
+  # for the life of the process.
   def fetch(issuer)
     keys = parse(@fetcher.call(self.class.jwks_url(issuer)))
     @mutex.synchronize { record_success(issuer, keys) }
   rescue StandardError => e
     @mutex.synchronize { record_failure(issuer, e) }
+  ensure
+    @mutex.synchronize { release(issuer) }
   end
 
   def record_success(issuer, keys)
     @failed_at.delete(issuer)
     @entries[issuer] = { keys: keys, fetched_at: @clock.call }
-    finish(issuer)
     keys
   end
 
   def record_failure(issuer, error)
     @failed_at[issuer] = @clock.call
-    finish(issuer)
     @logger.warn("mPass JWKS fetch failed for #{issuer}: #{error.message}")
     serve_stale(issuer, @entries[issuer])
   end
 
-  def finish(issuer)
+  def release(issuer)
     @in_flight.delete(issuer)
     @fetch_finished.broadcast
   end

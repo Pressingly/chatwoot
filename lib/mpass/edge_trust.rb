@@ -13,7 +13,7 @@ class Mpass::EdgeTrust
   MIN_SECRET_LENGTH = 32
 
   def self.configured_secret(env = ENV)
-    env.fetch('MPASS_EDGE_SECRET', '').to_s.strip
+    Mpass::TokenVerifier.configured(env.fetch('MPASS_EDGE_SECRET', ''))
   end
 
   def self.usable_secret?(secret)

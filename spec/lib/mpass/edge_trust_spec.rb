@@ -43,6 +43,13 @@ RSpec.describe Mpass::EdgeTrust do
     end
   end
 
+  it 'treats a CHANGE_ME_ placeholder of any length as unset' do
+    placeholder = 'CHANGE_ME_CHATWOOT_EDGE_SECRET_0123456789abcdef'
+    with_modified_env(MPASS_EDGE_SECRET: placeholder) do
+      expect(call(identity.merge('HTTP_X_MPASS_EDGE_SECRET' => placeholder)).keys.grep(/\AHTTP_X_AUTH_REQUEST_/)).to be_empty
+    end
+  end
+
   it 'does not mutate the incoming env and stays quiet without identity headers' do
     env = { 'PATH_INFO' => '/health', 'HTTP_X_MPASS_EDGE_SECRET' => 'forged' }
     call(env)

@@ -88,10 +88,18 @@ module Mpass::ProxyIdentity
     return false if reason.nil?
     return true if CLAIM_REJECTIONS.include?(reason)
 
+    log_skipped_recheck(request, reason)
+    false
+  end
+
+  # verifier_unconfigured is already reported once at boot.
+  def log_skipped_recheck(request, reason)
+    return if reason == 'verifier_unconfigured'
+    return unless Mpass::LogThrottle.shared.allow?("corporate-recheck:#{reason}")
+
     Rails.logger.warn(
       "mPass corporate re-check skipped: reason=#{reason} mpass_id=#{Mpass::EdgeTrust.mpass_id_for_logs(request.env)} path=#{request.path}"
     )
-    false
   end
 
   def corporate_id

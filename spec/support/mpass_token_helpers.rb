@@ -35,5 +35,6 @@ RSpec.configure do |config|
   config.before do
     Mpass::JwksCache.shared.reset!
     Mpass::VerifiedTokenCache.shared.reset!
+    Mpass::LogThrottle.shared.reset!
   end
 end

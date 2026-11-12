@@ -155,6 +155,19 @@ RSpec.describe Mpass::ProxyIdentity do
       expect(Rails.logger).to have_received(:warn).with(/re-check skipped: reason=missing_token/)
     end
 
+    it 'logs a skipped re-check once per reason per minute' do
+      allow(Rails.logger).to receive(:warn)
+      expired = mpass_token(acme_claims.merge('exp' => Time.now.to_i - 600))
+      3.times { mismatch?(expired) }
+      expect(Rails.logger).to have_received(:warn).with(/re-check skipped: reason=expired/).once
+    end
+
+    it 'does not log an unconfigured verifier per request' do
+      allow(Rails.logger).to receive(:warn)
+      with_modified_env(MPASS_OIDC_CLIENT_ID: nil) { expect(mismatch?(mpass_token(acme_claims))).to be false }
+      expect(Rails.logger).not_to have_received(:warn).with(/verifier_unconfigured/)
+    end
+
     it 'keeps the session when the JWKS is unreachable' do
       stub_request(:get, "#{MpassTokenHelpers::MPASS_ISSUER}/.well-known/jwks.json").to_return(status: 503)
       expect(mismatch?(mpass_token(acme_claims.merge('custom:corporate_id' => 'globex-7')))).to be false
