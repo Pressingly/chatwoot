@@ -71,47 +71,46 @@ RSpec.describe Mpass::ProxyIdentity do
     end
   end
 
-  describe '.corporate_claims_ok?' do
-    def token(claims)
-      "header.#{Base64.urlsafe_encode64(claims.to_json, padding: false)}.signature"
-    end
-
-    def check(access_token)
+  describe '.corporate_rejection' do
+    def rejection(access_token)
       headers = access_token ? { 'HTTP_X_AUTH_REQUEST_ACCESS_TOKEN' => access_token } : {}
-      described_class.corporate_claims_ok?(request_with(headers))
+      described_class.corporate_rejection(request_with(headers))
     end
 
-    let(:acme) { token('custom:is_corporate' => 'true', 'custom:corporate_id' => 'acme-42') }
+    let(:acme) { mpass_token('custom:is_corporate' => 'true', 'custom:corporate_id' => 'acme-42') }
 
     it 'skips the check when SMB_CORPORATE_ID is unset, even with no token' do
-      with_modified_env(SMB_CORPORATE_ID: nil) { expect(check(nil)).to be true }
+      with_modified_env(SMB_CORPORATE_ID: nil) { expect(rejection(nil)).to be_nil }
     end
 
     context 'when SMB_CORPORATE_ID is set' do
-      around { |ex| with_modified_env(SMB_CORPORATE_ID: 'acme-42') { ex.run } }
+      around { |ex| with_modified_env(SMB_CORPORATE_ID: 'acme-42', **mpass_verifier_env) { ex.run } }
+
+      before { stub_mpass_jwks }
 
       it 'admits a matching corporate principal' do
-        expect(check(acme)).to be true
+        expect(rejection(acme)).to be_nil
+        expect(described_class.corporate_claims_ok?(request_with('HTTP_X_AUTH_REQUEST_ACCESS_TOKEN' => acme))).to be true
       end
 
       it 'refuses another corporate' do
-        expect(check(token('custom:is_corporate' => 'true', 'custom:corporate_id' => 'globex-7'))).to be false
+        expect(rejection(mpass_token('custom:is_corporate' => 'true', 'custom:corporate_id' => 'globex-7'))).to eq('wrong_organization')
       end
 
       it 'refuses an individual principal carrying the right id' do
-        expect(check(token('custom:is_corporate' => 'false', 'custom:corporate_id' => 'acme-42'))).to be false
-        expect(check(token('custom:corporate_id' => 'acme-42'))).to be false
+        expect(rejection(mpass_token('custom:is_corporate' => 'false', 'custom:corporate_id' => 'acme-42'))).to eq('not_corporate')
+        expect(rejection(mpass_token('custom:corporate_id' => 'acme-42'))).to eq('not_corporate')
       end
 
       it 'refuses a missing token' do
-        expect(check(nil)).to be false
-        expect(check('')).to be false
+        expect(rejection(nil)).to eq('missing_token')
+        expect(rejection('')).to eq('missing_token')
       end
 
       it 'refuses an undecodable token without raising' do
         ['not-a-jwt', 'a.!!!.c', "a.#{Base64.urlsafe_encode64('not json')}.c",
          "a.#{Base64.urlsafe_encode64('[1]')}.c", "a.#{Base64.urlsafe_encode64("\xff\xfe")}.c"].each do |bad|
-          expect(check(bad)).to be(false), bad
+          expect(rejection(bad)).to eq('malformed'), bad
         end
       end
     end
