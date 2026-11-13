@@ -57,8 +57,7 @@ services:
     image: chatwoot-mpass:devkit
     restart: unless-stopped
     # NEVER add `ports:` — audit row 2. A published port is a way into the app
-    # that never passes ForwardAuth, and the identity headers are trusted
-    # without verification precisely because that path does not exist.
+    # that never passes ForwardAuth.
     depends_on: &chatwoot-deps
       chatwoot-postgres:
         condition: service_healthy
@@ -102,8 +101,15 @@ services:
       # devise_token_auth token lifespan, so Chatwoot expires with the bundle
       # instead of holding its own 2-month default.
       SESSION_COOKIE_MAX_AGE_SECONDS: ${SESSION_COOKIE_MAX_AGE_SECONDS:-432000}
-      # Corporate-tenant gate; empty admits every mPass principal.
+      # Identity headers count only on requests carrying this secret, which the
+      # chatwoot-edge-secret middleware sets on chatwoot-secure. Empty or shorter
+      # than 32 characters: the headers are ignored and nobody can sign in.
+      MPASS_EDGE_SECRET: ${CHATWOOT_EDGE_SECRET:-}
+      # Corporate-tenant gate; empty admits every mPass principal. When set, the
+      # forwarded token is verified against the Cognito issuer's JWKS first.
       SMB_CORPORATE_ID: ${SMB_CORPORATE_ID:-}
+      MPASS_COGNITO_ISSUER_URL: ${OIDC_BASE_URI:-}
+      MPASS_OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
       ENABLE_ACCOUNT_SIGNUP: 'false'
     # db:chatwoot_prepare loads the schema on an empty database and migrates an
     # existing one, so a rebuild is safe to run repeatedly.
@@ -130,7 +136,12 @@ services:
       - traefik.http.routers.chatwoot-secure.entrypoints=websecure
       - traefik.http.routers.chatwoot-secure.service=chatwoot
       - traefik.http.routers.chatwoot-secure.priority=10
-      - traefik.http.routers.chatwoot-secure.middlewares=strip-auth-headers@docker,security-headers@docker,mpass-auth@docker
+      - traefik.http.routers.chatwoot-secure.middlewares=strip-auth-headers@docker,security-headers@docker,mpass-auth@docker,chatwoot-edge-secret@docker
+      # Edge secret: set on the protected router (overwriting any client value),
+      # removed on every public one, so only a request that passed mpass-auth
+      # reaches Chatwoot with it.
+      - traefik.http.middlewares.chatwoot-edge-secret.headers.customrequestheaders.X-Mpass-Edge-Secret=${CHATWOOT_EDGE_SECRET:-}
+      - traefik.http.middlewares.chatwoot-strip-edge-secret.headers.customrequestheaders.X-Mpass-Edge-Secret=
 
       # Paths that must answer without a login. They keep strip-auth-headers, so
       # a request arriving here can still never assert an identity — it simply
@@ -141,7 +152,7 @@ services:
       - traefik.http.routers.chatwoot-public.entrypoints=websecure
       - traefik.http.routers.chatwoot-public.service=chatwoot
       - traefik.http.routers.chatwoot-public.priority=20
-      - traefik.http.routers.chatwoot-public.middlewares=strip-auth-headers@docker,security-headers@docker
+      - traefik.http.routers.chatwoot-public.middlewares=strip-auth-headers@docker,chatwoot-strip-edge-secret@docker,security-headers@docker
 
       # Read-only customer-facing pages, GET/HEAD only: the widget's new-message
       # sound (/audio/widget/, static mp3), the public help center (/hc/, every
@@ -152,7 +163,7 @@ services:
       - traefik.http.routers.chatwoot-public-readonly.entrypoints=websecure
       - traefik.http.routers.chatwoot-public-readonly.service=chatwoot
       - traefik.http.routers.chatwoot-public-readonly.priority=20
-      - traefik.http.routers.chatwoot-public-readonly.middlewares=strip-auth-headers@docker,security-headers@docker
+      - traefik.http.routers.chatwoot-public-readonly.middlewares=strip-auth-headers@docker,chatwoot-strip-edge-secret@docker,security-headers@docker
 
       # Help-center articles the widget opens in an iframe on customer sites
       # (ArticleContainer.vue). Chatwoot drops X-Frame-Options exactly when
@@ -163,7 +174,7 @@ services:
       - traefik.http.routers.chatwoot-public-hc-plain.entrypoints=websecure
       - traefik.http.routers.chatwoot-public-hc-plain.service=chatwoot
       - traefik.http.routers.chatwoot-public-hc-plain.priority=30
-      - traefik.http.routers.chatwoot-public-hc-plain.middlewares=strip-auth-headers@docker,chatwoot-widget-headers@docker
+      - traefik.http.routers.chatwoot-public-hc-plain.middlewares=strip-auth-headers@docker,chatwoot-strip-edge-secret@docker,chatwoot-widget-headers@docker
 
       # The end-customer surfaces. Unlike the other five apps, Chatwoot serves
       # people who are not mPass users at all: the chat widget on a customer's
@@ -193,7 +204,7 @@ services:
       # widget iframe loading on any customer site. Chatwoot drops that header on
       # /widget itself (WidgetsController#allow_iframe_requests); Traefik must not
       # put it back. The rest of the set is kept.
-      - traefik.http.routers.chatwoot-public-widget.middlewares=strip-auth-headers@docker,chatwoot-widget-headers@docker
+      - traefik.http.routers.chatwoot-public-widget.middlewares=strip-auth-headers@docker,chatwoot-strip-edge-secret@docker,chatwoot-widget-headers@docker
       - traefik.http.middlewares.chatwoot-widget-headers.headers.stsSeconds=31536000
       - traefik.http.middlewares.chatwoot-widget-headers.headers.stsIncludeSubdomains=true
       - traefik.http.middlewares.chatwoot-widget-headers.headers.contentTypeNosniff=true

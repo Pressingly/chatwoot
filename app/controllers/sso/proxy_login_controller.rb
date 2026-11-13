@@ -2,11 +2,10 @@
 
 # GET /auth/sso/proxy-login — the ForwardAuth handoff.
 #
-# Trust chain: Traefik strips any client-supplied X-Auth-Request-* header, then
-# oauth2-proxy re-adds verified values only for a valid upstream OIDC session.
-# This controller therefore trusts X-Auth-Request-Email without verifying it, which
-# is safe ONLY while the three invariants in sso-rules-moneta/openspec/project.md
-# hold. The AUTH_TYPE gate below is the last line of defence if they stop holding.
+# Trust chain: Traefik strips any client-supplied X-Auth-Request-* header,
+# oauth2-proxy re-adds verified values for a valid upstream OIDC session, and
+# Mpass::EdgeTrust drops them on any request that did not carry Traefik's edge
+# secret. Under SMB_CORPORATE_ID the forwarded token's signature is verified too.
 #
 # Flow: read proxy identity -> resolve-or-provision -> mint a 5-minute single-use
 # sso_auth_token -> 302 to /app/login?email=&sso_auth_token=. The existing SPA login
@@ -22,8 +21,10 @@ class Sso::ProxyLoginController < ApplicationController
   def create
     email = Mpass::ProxyIdentity.email(request)
     return redirect_with_error if email.blank?
+
     # Before the builder, so a refused principal leaves no user row behind.
-    return refuse_corporate unless Mpass::ProxyIdentity.corporate_claims_ok?(request)
+    rejection = Mpass::ProxyIdentity.corporate_rejection(request)
+    return refuse_corporate(rejection) if rejection
 
     user = MpassUserBuilder.new(
       email: email,
@@ -49,7 +50,10 @@ class Sso::ProxyLoginController < ApplicationController
   # 403, not the error redirect: a principal outside the tenant is not a failed
   # handoff to retry. The SPA cookie goes too, so a session the browser still holds
   # for this principal cannot outlive the refusal.
-  def refuse_corporate
+  def refuse_corporate(reason)
+    Rails.logger.warn(
+      "mPass proxy login refused: reason=#{reason} mpass_id=#{Mpass::EdgeTrust.mpass_id_for_logs(request.env)} path=#{request.path}"
+    )
     cookies.delete('cw_d_session_info')
     head :forbidden
   end

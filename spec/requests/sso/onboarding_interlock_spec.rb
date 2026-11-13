@@ -25,8 +25,8 @@ RSpec.describe 'auto-join / onboarding interlock', type: :request do
   let!(:account) { create(:account) }
 
   it 'provisions at a role the onboarding wizard cannot capture' do
-    with_modified_env AUTH_TYPE: 'SSO', FRONTEND_URL: 'https://support.example.com' do
-      get '/auth/sso/proxy-login', headers: { 'X-Auth-Request-Email' => 'alice@askii.ai' }
+    with_modified_env AUTH_TYPE: 'SSO', FRONTEND_URL: 'https://support.example.com', MPASS_EDGE_SECRET: MpassTokenHelpers::MPASS_EDGE_SECRET do
+      get '/auth/sso/proxy-login', headers: mpass_edge_headers('X-Auth-Request-Email' => 'alice@askii.ai')
     end
 
     account_user = User.from_email('alice@askii.ai').account_users.first
@@ -40,8 +40,8 @@ RSpec.describe 'auto-join / onboarding interlock', type: :request do
   it 'still provisions cleanly when the account is mid-onboarding' do
     account.update!(custom_attributes: { 'onboarding_step' => 'account_details' })
 
-    with_modified_env AUTH_TYPE: 'SSO', FRONTEND_URL: 'https://support.example.com' do
-      get '/auth/sso/proxy-login', headers: { 'X-Auth-Request-Email' => 'bob@askii.ai' }
+    with_modified_env AUTH_TYPE: 'SSO', FRONTEND_URL: 'https://support.example.com', MPASS_EDGE_SECRET: MpassTokenHelpers::MPASS_EDGE_SECRET do
+      get '/auth/sso/proxy-login', headers: mpass_edge_headers('X-Auth-Request-Email' => 'bob@askii.ai')
       expect(response).to redirect_to(/sso_auth_token/)
     end
 
