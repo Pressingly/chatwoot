@@ -175,8 +175,8 @@ RSpec.describe 'local-credential endpoints under SSO', type: :request do
     end
 
     it 'leaves the SSO handoff itself reachable' do
-      with_modified_env(FRONTEND_URL: 'https://support.example.com') do
-        get '/auth/sso/proxy-login', headers: { 'X-Auth-Request-Email' => 'alice@askii.ai' }
+      with_modified_env(FRONTEND_URL: 'https://support.example.com', MPASS_EDGE_SECRET: MpassTokenHelpers::MPASS_EDGE_SECRET) do
+        get '/auth/sso/proxy-login', headers: mpass_edge_headers('X-Auth-Request-Email' => 'alice@askii.ai')
         expect(response).to have_http_status(:found)
       end
     end

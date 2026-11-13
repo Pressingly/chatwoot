@@ -4,10 +4,13 @@ require 'rails_helper'
 # adapted to Chatwoot's redirect-handoff shape, plus the app-specific guards.
 RSpec.describe 'Sso::ProxyLoginController', type: :request do
   let!(:account) { create(:account) }
-  let(:sso_env) { { AUTH_TYPE: 'SSO', FRONTEND_URL: 'https://support.example.com', DEFAULT_EMAIL_DOMAIN: 'askii.ai' } }
+  let(:sso_env) do
+    { AUTH_TYPE: 'SSO', FRONTEND_URL: 'https://support.example.com', DEFAULT_EMAIL_DOMAIN: 'askii.ai',
+      MPASS_EDGE_SECRET: MpassTokenHelpers::MPASS_EDGE_SECRET }
+  end
 
   def get_handoff(headers)
-    get '/auth/sso/proxy-login', headers: headers
+    get '/auth/sso/proxy-login', headers: mpass_edge_headers(headers)
   end
 
   describe 'AUTH_TYPE gate (audit row 6)' do
@@ -90,26 +93,25 @@ RSpec.describe 'Sso::ProxyLoginController', type: :request do
   end
 
   describe 'corporate-tenant gate' do
-    let(:env) { sso_env.merge(SMB_CORPORATE_ID: 'acme-42') }
+    let(:env) { sso_env.merge(SMB_CORPORATE_ID: 'acme-42', **mpass_verifier_env) }
+    let(:acme) { { 'custom:is_corporate' => 'true', 'custom:corporate_id' => 'acme-42' } }
 
-    def token(claims)
-      "h.#{Base64.urlsafe_encode64(claims.to_json, padding: false)}.s"
+    before { stub_mpass_jwks }
+
+    def handoff_with_token(access_token)
+      get_handoff('X-Auth-Request-Email' => 'alice@example.com', 'X-Auth-Request-Access-Token' => access_token)
     end
 
-    it 'hands off a matching corporate principal' do
+    it 'hands off a matching corporate principal with a verified token' do
       with_modified_env(**env) do
-        get_handoff('X-Auth-Request-Email' => 'alice@example.com',
-                    'X-Auth-Request-Access-Token' => token('custom:is_corporate' => 'true', 'custom:corporate_id' => 'acme-42'))
+        handoff_with_token(mpass_token(acme))
         expect(response).to redirect_to(/sso_auth_token/)
       end
     end
 
     it 'refuses another tenant with 403 and leaves no user row' do
       with_modified_env(**env) do
-        expect do
-          get_handoff('X-Auth-Request-Email' => 'mallory@example.com',
-                      'X-Auth-Request-Access-Token' => token('custom:is_corporate' => 'true', 'custom:corporate_id' => 'globex-7'))
-        end.not_to change(User, :count)
+        expect { handoff_with_token(mpass_token(acme.merge('custom:corporate_id' => 'globex-7'))) }.not_to change(User, :count)
         expect(response).to have_http_status(:forbidden)
       end
     end
@@ -118,6 +120,82 @@ RSpec.describe 'Sso::ProxyLoginController', type: :request do
       with_modified_env(**env) do
         get_handoff('X-Auth-Request-Email' => 'alice@example.com')
         expect(response).to have_http_status(:forbidden)
+      end
+    end
+
+    it 'refuses an unsigned token carrying the right claims' do
+      unsigned = "#{Base64.urlsafe_encode64({ alg: 'none' }.to_json, padding: false)}." \
+                 "#{Base64.urlsafe_encode64(mpass_claims(acme).to_json, padding: false)}."
+      with_modified_env(**env) do
+        expect { handoff_with_token(unsigned) }.not_to change(User, :count)
+        expect(response).to have_http_status(:forbidden)
+      end
+    end
+
+    it 'refuses a token signed by another key and logs the reason without an email' do
+      allow(Rails.logger).to receive(:warn)
+      with_modified_env(**env) do
+        handoff_with_token(mpass_token(acme, OpenSSL::PKey::RSA.generate(2048)))
+        expect(response).to have_http_status(:forbidden)
+      end
+      expect(Rails.logger).to have_received(:warn).with(/reason=bad_signature/)
+      expect(Rails.logger).not_to have_received(:warn).with(/alice@example\.com/)
+    end
+
+    it 'refuses everyone with reason placeholder_config while SMB_CORPORATE_ID is a CHANGE_ME_ placeholder' do
+      allow(Rails.logger).to receive(:warn)
+      with_modified_env(**env, SMB_CORPORATE_ID: 'CHANGE_ME_SMB_CORPORATE_ID') do
+        expect { handoff_with_token(mpass_token(acme)) }.not_to change(User, :count)
+        expect(response).to have_http_status(:forbidden)
+      end
+      expect(Rails.logger).to have_received(:warn).with(/reason=placeholder_config/)
+    end
+
+    it 'refuses an expired token at the handoff' do
+      with_modified_env(**env) do
+        handoff_with_token(mpass_token(acme.merge('exp' => Time.now.to_i - 600)))
+        expect(response).to have_http_status(:forbidden)
+      end
+    end
+
+    it 'answers 403, not 500, when the JWKS cannot be fetched' do
+      stub_request(:get, "#{MpassTokenHelpers::MPASS_ISSUER}/.well-known/jwks.json").to_timeout
+      with_modified_env(**env) do
+        handoff_with_token(mpass_token(acme))
+        expect(response).to have_http_status(:forbidden)
+      end
+    end
+
+    it 'fetches no JWKS when SMB_CORPORATE_ID is unset' do
+      with_modified_env(**sso_env, **mpass_verifier_env) do
+        handoff_with_token('not-a-jwt')
+        expect(response).to redirect_to(/sso_auth_token/)
+      end
+      expect(a_request(:get, %r{/.well-known/jwks.json})).not_to have_been_made
+    end
+  end
+
+  describe 'edge trust' do
+    it 'ignores identity headers sent without the edge secret' do
+      with_modified_env(**sso_env) do
+        expect { get '/auth/sso/proxy-login', headers: { 'X-Auth-Request-Email' => 'alice@example.com' } }.not_to change(User, :count)
+        expect(response).to redirect_to(%r{/app/login\?error=sso_failed})
+      end
+    end
+
+    it 'ignores identity headers sent with the wrong edge secret' do
+      with_modified_env(**sso_env) do
+        expect do
+          get '/auth/sso/proxy-login', headers: { 'X-Auth-Request-Email' => 'alice@example.com', 'X-Mpass-Edge-Secret' => 'x' * 40 }
+        end.not_to change(User, :count)
+      end
+    end
+
+    it 'trusts nothing when the configured secret is shorter than 32 characters' do
+      with_modified_env(**sso_env, MPASS_EDGE_SECRET: 'short-secret') do
+        expect do
+          get '/auth/sso/proxy-login', headers: { 'X-Auth-Request-Email' => 'alice@example.com', 'X-Mpass-Edge-Secret' => 'short-secret' }
+        end.not_to change(User, :count)
       end
     end
   end

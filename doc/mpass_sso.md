@@ -33,33 +33,45 @@ browser ──> traefik ──(ForwardAuth)──> oauth2-proxy ──> mpass-au
 | `FRONTEND_URL` | The https origin the browser sees. The handoff builds its redirect from it |
 | `LOGOUT_REDIRECT_URL` | Where the app's Sign out navigates: the platform portal. Must be an absolute `http(s)` URL; missing or invalid, Sign out logs an error and does nothing. Not upstream's `LOGOUT_REDIRECT_LINK`, which is read from the database only and also drives the 401 re-auth path |
 | `SESSION_COOKIE_MAX_AGE_SECONDS` | devise_token_auth token lifespan, so Chatwoot expires with the rest of the bundle. Unset or not a positive integer: upstream's 2-month default (`config/initializers/devise_token_auth.rb`) |
+| `MPASS_EDGE_SECRET` | Required under SSO. At least 32 characters; Traefik's protected router sends it in `X-Mpass-Edge-Secret`. Empty or shorter: identity headers are ignored on every request, so nobody can sign in (logged as an error at boot). See [Edge trust](#edge-trust) |
 | `SMB_CORPORATE_ID` | Optional. When set, only principals of that corporate are admitted; see [Corporate-tenant gate](#corporate-tenant-gate) |
+| `MPASS_COGNITO_ISSUER_URL` | Cognito issuer (`https://cognito-idp.<region>.amazonaws.com/<pool>`). Required when `SMB_CORPORATE_ID` is set; falls back to `COGNITO_AWS_REGION` + `COGNITO_USER_POOL_ID`. `CHANGE_ME_*` counts as unset |
+| `MPASS_TOKEN_ISSUER_URL` | Optional second trusted issuer: mpass-auth-proxy, when it re-signs id_tokens (JWKS at `<issuer>/.well-known/jwks.json`) |
+| `MPASS_OIDC_CLIENT_ID` | The Cognito app client id. Required when `SMB_CORPORATE_ID` is set: access tokens must carry it as `client_id`, id_tokens in `aud` |
 | `CHATWOOT_SMB_DEFAULT_ACCOUNT_ID` | Optional. The account every SSO user joins as `agent`. Unset: the oldest active account. Set to an id that doesn't exist: nobody is joined |
 | `ENABLE_ACCOUNT_SIGNUP` | Keep `false`. `POST /api/v1/accounts` is 404 under SSO anyway |
 | `GOOGLE_OAUTH_CLIENT_ID` / `_SECRET` | Leave unset. The callbacks are 404 under SSO; unset is defence in depth |
 | `TRUSTED_PROXY_CIDRS` | Optional, comma-separated CIDRs added to the trusted proxies (`config/initializers/00_trusted_proxies.rb`), so `request.ip` and Rack::Attack resolve the real client behind a proxy chain outside the private ranges (GKE: pod CIDR, GFE ranges, gateway VIP). Also stops Rack honouring a client-supplied `Forwarded` header. Unset: upstream behaviour |
 
-## Why trusting the headers is safe
+## Edge trust
 
-`lib/mpass/proxy_identity.rb` reads `X-Auth-Request-Email` without verifying it. That is
-only sound while all three of these hold:
+`Mpass::EdgeTrust` (`lib/mpass/edge_trust.rb`, outermost Rack middleware) decides whether a
+request's `X-Auth-Request-*` headers count. Only requests carrying `MPASS_EDGE_SECRET` in
+`X-Mpass-Edge-Secret` (constant-time compare) keep them; Traefik's `chatwoot-edge-secret`
+middleware sets that header on the protected router only. On every other request the
+headers are dropped before any controller reads them and a warning is logged with the
+mPass id (never an email), path and remote address. The secret header itself is removed
+from the request in all cases, and Sentry events drop it and the access-token header.
 
-1. Chatwoot's port is never published — traffic can arrive only through Traefik.
+Chatwoot's port is reachable from every container on the backend network, so without the
+secret a direct call could name any user. The remaining invariants still hold:
+
+1. Chatwoot's port is never published.
 2. Traefik's `strip-auth-headers` middleware deletes any client-supplied
    `X-Auth-Request-*` header **before** `mpass-auth` re-adds the verified values.
 3. oauth2-proxy validates the upstream OIDC session on every ForwardAuth call.
 
-If any one stops holding, every reader of these headers becomes a spoofing vector. The
-`AUTH_TYPE` gate is the last line of defence: with it unset, the handoff controller
-answers `404` no matter what headers arrive.
+The `AUTH_TYPE` gate still applies: with it unset, the handoff controller answers `404` no
+matter what headers arrive.
 
 Deployment requirements that follow from this:
 
 - No `ports:` on the Chatwoot service.
 - Every protected router carries `strip-auth-headers`, then `security-headers`, then
-  `mpass-auth` — in that order.
-- Bypass routers (no `mpass-auth`) still carry `strip-auth-headers`, so a request that
-  skips authentication can never assert an identity either. The list is
+  `mpass-auth`, then `chatwoot-edge-secret` — in that order.
+- Bypass routers (no `mpass-auth`) still carry `strip-auth-headers`, plus
+  `chatwoot-strip-edge-secret`, so a request that skips authentication can never assert
+  an identity either. The list is
   [below](#forwardauth-bypass-list).
 
 ## ForwardAuth bypass list
@@ -152,18 +164,30 @@ either would bounce the browser until it gave up.
 ## Corporate-tenant gate
 
 ForwardAuth admits every principal in the Cognito pool. When `SMB_CORPORATE_ID` is set,
-`Mpass::ProxyIdentity.corporate_claims_ok?` decodes `X-Auth-Request-Access-Token` (second
-JWT segment, base64url, no signature check: it rides the same trust chain as the identity
-header) and requires both `custom:is_corporate == "true"` and
-`custom:corporate_id == SMB_CORPORATE_ID`. A missing or undecodable token fails the check.
-Unset, the check is skipped.
+`Mpass::ProxyIdentity.corporate_rejection` verifies `X-Auth-Request-Access-Token` with
+`Mpass::TokenVerifier` and then requires both `custom:is_corporate == "true"` and
+`custom:corporate_id == SMB_CORPORATE_ID`. Unset, the check is skipped and no JWKS is fetched.
+
+`SMB_CORPORATE_ID` is trimmed; empty means the gate is off. A `CHANGE_ME_` placeholder keeps the gate on and refuses every login (`reason=placeholder_config`, existing sessions are flushed, and boot logs an error), so a forgotten placeholder fails closed.
+
+Verification: the issuer must be the Cognito issuer or `MPASS_TOKEN_ISSUER_URL`; RS256 only
+against that issuer's JWKS (cached an hour per issuer, fetched outside the lock with one fetch
+in flight per issuer, 2s timeout, 30s backoff after a failure; during a failure the last good
+set is served for up to 24 hours with a warning, and a key that fails to import is skipped
+and logged by `kid`); `exp`, `iat`, `iss` and `token_use` required, 60s clock leeway; an access
+token's `client_id` or an id_token's `aud` must be `MPASS_OIDC_CLIENT_ID`. Any failure is a
+refusal with a reason code (`missing_token`, `malformed`, `untrusted_issuer`,
+`bad_signature`, `expired`, `wrong_algorithm`, `wrong_audience`, `unknown_signing_key`,
+`jwks_unavailable`, `not_corporate`, `wrong_organization`, ...), logged at the handoff.
 
 - **Handoff:** `Sso::ProxyLoginController` answers `403` before the user builder runs, so
   a refused principal leaves no user row, and it clears the SPA cookie.
-- **Every request after it:** a session whose principal now fails the check is treated as
-  a mismatch and flushed on both reconciliation paths (below), and the handoff then refuses
-  it. So a revoked corporate membership is enforced on the next request, not only at the
-  next login.
+- **Every request after it:** a session whose verified token names another tenant
+  (`not_corporate`, `wrong_organization`) is treated as a mismatch and flushed on both
+  reconciliation paths (below), and the handoff then refuses it. A token that cannot be
+  verified on that request (missing, expired between refreshes, JWKS unreachable) is logged
+  and the session continues, so an issuer outage cannot log everyone out; the handoff stays
+  strict. Verified claims are memoised by token digest until `exp` (at most 1000 entries).
 
 This matters more on Chatwoot than elsewhere: an auto-provisioned `agent` can read
 end-customer conversations.

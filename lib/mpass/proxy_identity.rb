@@ -2,16 +2,11 @@
 
 # Reads the identity oauth2-proxy asserts on ForwardAuth-protected requests.
 #
-# These headers are trusted without verification. That is only safe under the
-# deployment invariants in sso-rules-moneta/openspec/project.md:
-#
-#   1. Chatwoot's port is never published — traffic can only arrive via Traefik.
-#   2. Traefik's strip-auth-headers middleware deletes any client-supplied
-#      X-Auth-Request-* header before mpass-auth re-adds the verified values.
-#   3. oauth2-proxy validates the upstream OIDC session on every ForwardAuth call.
-#
-# If any one of the three stops holding, every caller of this module becomes a
-# spoofing vector. Do not read these headers outside an AUTH_TYPE=SSO gate.
+# Mpass::EdgeTrust has already dropped these headers unless the request carried
+# the edge secret only Traefik's chatwoot-secure router injects, so whatever is
+# left here came through mPass ForwardAuth. With SMB_CORPORATE_ID set, the
+# forwarded token is also verified against the issuers' JWKS before its corporate
+# claims count. Do not read these headers outside an AUTH_TYPE=SSO gate.
 #
 module Mpass::ProxyIdentity
   EMAIL_HEADER = 'HTTP_X_AUTH_REQUEST_EMAIL'
@@ -20,6 +15,7 @@ module Mpass::ProxyIdentity
 
   UUID_SHAPE = /\A\h{8}-\h{4}-\h{4}-\h{4}-\h{12}\z/
   NUMERIC = /\A\d+\z/
+  CLAIM_REJECTIONS = %w[not_corporate wrong_organization placeholder_config].freeze
 
   module_function
 
@@ -69,23 +65,58 @@ module Mpass::ProxyIdentity
   # Corporate-tenant binding (proxy-auth-middleware "corporate-tenant binding SHALL
   # gate admission when configured"). ForwardAuth admits the whole Cognito pool;
   # with SMB_CORPORATE_ID set, only that corporate's principals get in. Unset, the
-  # check is skipped. The JWT is decoded without verifying its signature: it rides
-  # the same trust chain as the identity headers (oauth2-proxy validated it,
-  # Traefik strips client copies). A missing or undecodable token fails closed.
-  def corporate_claims_ok?(request)
-    expected = ENV.fetch('SMB_CORPORATE_ID', nil).presence
-    return true if expected.nil?
+  # check is skipped and no token is read. Returns why the caller is refused, or
+  # nil when it is admitted; a missing or unverifiable token fails closed.
+  def corporate_rejection(request, verifier: Mpass::TokenVerifier.from_env)
+    expected = corporate_id
+    return nil if expected.blank?
+    return 'placeholder_config' if corporate_id_placeholder?
 
-    payload = jwt_payload(request.get_header(ACCESS_TOKEN_HEADER))
-    payload.is_a?(Hash) && payload['custom:is_corporate'] == 'true' && payload['custom:corporate_id'] == expected
+    token = request.get_header(ACCESS_TOKEN_HEADER).to_s
+    return 'missing_token' if token.blank?
+
+    corporate_claims_rejection(verifier.verify(token), expected)
+  rescue Mpass::TokenVerifier::InvalidToken => e
+    e.reason
   end
 
-  def jwt_payload(token)
-    segment = token.to_s.split('.')[1]
-    return nil if segment.blank?
+  # The per-request re-check on an existing session. Only a verified token whose
+  # claims name another tenant ends the session; a token that cannot be verified
+  # right now (expired between refreshes, JWKS unreachable) leaves it alone, so an
+  # issuer outage cannot log everyone out. The handoff stays strict.
+  def corporate_mismatch?(request)
+    reason = corporate_rejection(request)
+    return false if reason.nil?
+    return true if CLAIM_REJECTIONS.include?(reason)
 
-    JSON.parse(Base64.urlsafe_decode64(segment))
-  rescue ArgumentError, EncodingError, JSON::ParserError
+    log_skipped_recheck(request, reason)
+    false
+  end
+
+  # verifier_unconfigured is already reported once at boot.
+  def log_skipped_recheck(request, reason)
+    return if reason == 'verifier_unconfigured'
+    return unless Mpass::LogThrottle.shared.allow?("corporate-recheck:#{reason}")
+
+    Rails.logger.warn(
+      "mPass corporate re-check skipped: reason=#{reason} mpass_id=#{Mpass::EdgeTrust.mpass_id_for_logs(request.env)} path=#{request.path}"
+    )
+  end
+
+  # Unlike the other settings, a CHANGE_ME_ value is not "unset": that would turn
+  # the gate off and admit the whole pool. It keeps the gate on and refuses everyone.
+  def corporate_id
+    ENV.fetch('SMB_CORPORATE_ID', nil).to_s.strip
+  end
+
+  def corporate_id_placeholder?
+    corporate_id.start_with?(Mpass::TokenVerifier::PLACEHOLDER_PREFIX)
+  end
+
+  def corporate_claims_rejection(claims, expected)
+    return 'not_corporate' unless claims['custom:is_corporate'] == 'true'
+    return 'wrong_organization' unless claims['custom:corporate_id'] == expected
+
     nil
   end
 

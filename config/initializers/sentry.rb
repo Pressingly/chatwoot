@@ -11,5 +11,12 @@ if ENV['SENTRY_DSN'].present?
 
     # to track post data in sentry
     config.send_default_pii = true unless ENV['DISABLE_SENTRY_PII']
+
+    redact_mpass_headers = lambda do |event, _hint|
+      event.request&.headers&.except!('X-Mpass-Edge-Secret', 'X-Auth-Request-Access-Token')
+      event
+    end
+    config.before_send = redact_mpass_headers
+    config.before_send_transaction = redact_mpass_headers
   end
 end
