@@ -77,6 +77,14 @@ class Inboxes extends CacheEnabledApiClient {
     return axios.post(`${this.url}/${inboxId}/enable_whatsapp_calling`);
   }
 
+  getWhatsappCallHours(inboxId) {
+    return axios.get(`${this.url}/${inboxId}/whatsapp_call_hours`);
+  }
+
+  applyWhatsappCallHours(inboxId) {
+    return axios.patch(`${this.url}/${inboxId}/whatsapp_call_hours`);
+  }
+
   disableWhatsappCalling(inboxId) {
     return axios.post(`${this.url}/${inboxId}/disable_whatsapp_calling`);
   }
@@ -94,10 +102,31 @@ class Inboxes extends CacheEnabledApiClient {
     });
   }
 
-  setCallBusinessHours(inboxId, { enabled, message }) {
-    return axios.patch(`${this.url}/${inboxId}/call_business_hours`, {
-      business_hours_calls_enabled: enabled,
-      out_of_hours_call_message: message,
+  setCallRouting(
+    inboxId,
+    {
+      ringStrategy,
+      ringStepSeconds,
+      assigneeRingsFirst,
+      callCooldownSeconds,
+      businessHoursCallsEnabled,
+    }
+  ) {
+    return axios.patch(`${this.url}/${inboxId}/call_routing`, {
+      ring_strategy: ringStrategy,
+      ring_step_seconds: ringStepSeconds,
+      assignee_rings_first: assigneeRingsFirst,
+      call_cooldown_seconds: callCooldownSeconds,
+      business_hours_calls_enabled: businessHoursCallsEnabled,
+    });
+  }
+
+  // kind: 'greeting' | 'unanswered'; only 'unanswered' carries a ring time
+  setCallAnnouncement(inboxId, kind, { enabled, message, timeoutSeconds }) {
+    return axios.patch(`${this.url}/${inboxId}/call_announcements/${kind}`, {
+      enabled,
+      message,
+      timeout_seconds: timeoutSeconds,
     });
   }
 }
